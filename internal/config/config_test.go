@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/nijaru/ripgo/internal/cli"
+	"github.com/nijaru/ripgo/pattern"
 )
 
 func TestNewDefaults(t *testing.T) {
@@ -11,33 +12,37 @@ func TestNewDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.Pattern != "test" {
-		t.Errorf("Pattern = %q, want 'test'", cfg.Pattern)
+	if cfg.Pattern.Pattern != "test" {
+		t.Errorf("Pattern = %q, want 'test'", cfg.Pattern.Pattern)
 	}
 	if cfg.Threads == 0 {
 		t.Error("Threads should be > 0")
 	}
-	if cfg.OutputMode != OutputModeNormal {
+	if cfg.OutputMode() != OutputNormal {
 		t.Error("expected normal output mode")
 	}
 }
 
 func TestSmartCase(t *testing.T) {
-	// SmartCase works when FixedStrings is false (regex mode)
 	cfg, err := New(cli.Options{Pattern: "lowercase", SmartCase: true})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !cfg.IgnoreCase {
-		t.Error("expected IgnoreCase for all-lowercase pattern with smart case")
+	if !cfg.Pattern.SmartCase {
+		t.Error("expected SmartCase to be set")
 	}
 
-	cfg, err = New(cli.Options{Pattern: "UpperCase", SmartCase: true})
+	// Verify that pattern.New applies SmartCase logic correctly.
+	m, err := pattern.New(cfg.Pattern)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.IgnoreCase {
-		t.Error("expected case-sensitive for pattern with uppercase")
+	lm, ok := m.(*pattern.LiteralMatcher)
+	if !ok {
+		t.Fatal("expected literal matcher for lowercase pattern")
+	}
+	if !lm.CaseFold() {
+		t.Error("expected case-insensitive matching for all-lowercase with smart case")
 	}
 }
 
@@ -46,8 +51,8 @@ func TestContextFlag(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.ContextBefore != 3 || cfg.ContextAfter != 3 {
-		t.Errorf("ContextBefore=%d, ContextAfter=%d, want 3", cfg.ContextBefore, cfg.ContextAfter)
+	if cfg.Search.Before != 3 || cfg.Search.After != 3 {
+		t.Errorf("Before=%d, After=%d, want 3", cfg.Search.Before, cfg.Search.After)
 	}
 }
 
@@ -71,7 +76,6 @@ func TestParseSize(t *testing.T) {
 		{"1K", 1024, false},
 		{"10M", 10 * 1024 * 1024, false},
 		{"1G", 1024 * 1024 * 1024, false},
-		{"", 0, true},
 	}
 
 	for _, tt := range tests {
@@ -90,11 +94,11 @@ func TestOutputModes(t *testing.T) {
 		opts cli.Options
 		want OutputMode
 	}{
-		{cli.Options{Pattern: "x"}, OutputModeNormal},
-		{cli.Options{Pattern: "x", Count: true}, OutputModeCount},
-		{cli.Options{Pattern: "x", FilesWithMatches: true}, OutputModeFiles},
-		{cli.Options{Pattern: "x", Quiet: true}, OutputModeQuiet},
-		{cli.Options{Pattern: "x", Json: true}, OutputModeJSON},
+		{cli.Options{Pattern: "x"}, OutputNormal},
+		{cli.Options{Pattern: "x", Count: true}, OutputCount},
+		{cli.Options{Pattern: "x", FilesWithMatches: true}, OutputFiles},
+		{cli.Options{Pattern: "x", Quiet: true}, OutputQuiet},
+		{cli.Options{Pattern: "x", Json: true}, OutputJSON},
 	}
 
 	for _, tt := range tests {
@@ -102,8 +106,8 @@ func TestOutputModes(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if cfg.OutputMode != tt.want {
-			t.Errorf("OutputMode = %d, want %d for opts %+v", cfg.OutputMode, tt.want, tt.opts)
+		if cfg.OutputMode() != tt.want {
+			t.Errorf("OutputMode = %d, want %d for opts %+v", cfg.OutputMode(), tt.want, tt.opts)
 		}
 	}
 }

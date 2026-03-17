@@ -1,101 +1,91 @@
 package config
 
 import (
-	"errors"
-	"runtime"
 	"strconv"
 	"strings"
 	"unicode"
 
+	"github.com/nijaru/ripgo/ignore"
 	"github.com/nijaru/ripgo/internal/cli"
+	"github.com/nijaru/ripgo/pattern"
+	"github.com/nijaru/ripgo/search"
+	"github.com/nijaru/ripgo/walk"
 )
 
-type OutputMode int
-
-const (
-	OutputModeNormal OutputMode = iota
-	OutputModeJSON
-	OutputModeCount
-	OutputModeFiles
-	OutputModeQuiet
-)
-
+// Config holds all validated runtime configuration, translating CLI flags
+// into library-specific configs.
 type Config struct {
 	Paths            []string
-	Pattern          string
-	FixedStrings     bool
-	IgnoreCase       bool
-	SmartCase        bool
-	Multiline        bool
-	Hidden           bool
-	NoIgnore         bool
-	SearchBinary     bool
-	OnlyBinary       bool
-	FollowSymlinks   bool
-	ContextBefore    int
-	ContextAfter     int
-	Context          int
+	Pattern          pattern.Config
+	Search           search.Config
+	Walk             walk.Config
+	Ignore           ignore.Config
 	LineNumber       bool
 	Column           bool
 	Count            bool
 	FilesWithMatches bool
 	Quiet            bool
-	MaxFileSize      int64
-	MaxCount         int
-	GlobIncludes     []string
-	GlobExcludes     []string
-	OutputMode       OutputMode
+	Json             bool
 	Threads          int
 }
 
+// OutputMode returns the selected output mode.
+func (c *Config) OutputMode() OutputMode {
+	switch {
+	case c.Json:
+		return OutputJSON
+	case c.Count:
+		return OutputCount
+	case c.FilesWithMatches:
+		return OutputFiles
+	case c.Quiet:
+		return OutputQuiet
+	default:
+		return OutputNormal
+	}
+}
+
+type OutputMode int
+
+const (
+	OutputNormal OutputMode = iota
+	OutputJSON
+	OutputCount
+	OutputFiles
+	OutputQuiet
+)
+
+// New translates CLI options into validated library configs.
 func New(opts cli.Options) (*Config, error) {
-	cfg := &Config{
-		Paths:            opts.Paths,
-		Pattern:          opts.Pattern,
-		FixedStrings:     opts.FixedStrings,
-		IgnoreCase:       opts.IgnoreCase,
-		SmartCase:        opts.SmartCase,
-		Multiline:        opts.Multiline,
-		Hidden:           opts.Hidden,
-		NoIgnore:         opts.NoIgnore,
-		SearchBinary:     !opts.NoBinary && !opts.OnlyBinary,
-		OnlyBinary:       opts.OnlyBinary,
-		FollowSymlinks:   opts.FollowSymlinks,
-		ContextBefore:    opts.ContextBefore,
-		ContextAfter:     opts.ContextAfter,
-		LineNumber:       opts.LineNumber,
-		Column:           opts.Column,
-		Count:            opts.Count,
-		FilesWithMatches: opts.FilesWithMatches,
-		Quiet:            opts.Quiet,
-		MaxCount:         opts.MaxCount,
-		GlobIncludes:     opts.GlobInclude,
-		GlobExcludes:     opts.GlobExclude,
-		Threads:          opts.Threads,
+	paths := opts.Paths
+	if len(paths) == 0 {
+		paths = []string{"."}
 	}
 
-	if len(cfg.Paths) == 0 {
-		cfg.Paths = []string{"."}
+	pcfg := pattern.Config{
+		Pattern:      opts.Pattern,
+		FixedStrings: opts.FixedStrings,
+		IgnoreCase:   opts.IgnoreCase,
+		SmartCase:    opts.SmartCase,
+	}
+
+	scfg := search.Config{
+		MaxCount: opts.MaxCount,
 	}
 
 	if opts.Context > 0 {
-		cfg.ContextBefore = opts.Context
-		cfg.ContextAfter = opts.Context
+		scfg.Before = opts.Context
+		scfg.After = opts.Context
+	} else {
+		scfg.Before = opts.ContextBefore
+		scfg.After = opts.ContextAfter
 	}
 
-	switch {
-	case opts.Json:
-		cfg.OutputMode = OutputModeJSON
-	case opts.Count:
-		cfg.OutputMode = OutputModeCount
-	case opts.FilesWithMatches:
-		cfg.OutputMode = OutputModeFiles
-	case opts.Quiet:
-		cfg.OutputMode = OutputModeQuiet
-	}
-
-	if cfg.Threads <= 0 {
-		cfg.Threads = runtime.GOMAXPROCS(0)
+	wcfg := walk.Config{
+		Threads:        opts.Threads,
+		FollowSymlinks: opts.FollowSymlinks,
+		SearchBinary:   !opts.NoBinary && !opts.OnlyBinary,
+		OnlyBinary:     opts.OnlyBinary,
 	}
 
 	if opts.MaxFileSize != "" {
@@ -103,29 +93,41 @@ func New(opts cli.Options) (*Config, error) {
 		if err != nil {
 			return nil, err
 		}
-		cfg.MaxFileSize = size
+		wcfg.MaxFileSize = size
 	}
 
-	if cfg.SmartCase && !cfg.IgnoreCase && !cfg.FixedStrings {
-		cfg.IgnoreCase = !hasUppercase(cfg.Pattern)
+	icfg := ignore.Config{
+		GlobIncludes: opts.GlobInclude,
+		GlobExcludes: opts.GlobExclude,
+		NoIgnore:     opts.NoIgnore,
+		Hidden:       opts.Hidden,
 	}
 
-	return cfg, nil
-}
-
-func hasUppercase(s string) bool {
-	for _, r := range s {
-		if unicode.IsUpper(r) {
-			return true
-		}
+	threads := opts.Threads
+	if threads <= 0 {
+		threads = 1
 	}
-	return false
+
+	return &Config{
+		Paths:            paths,
+		Pattern:          pcfg,
+		Search:           scfg,
+		Walk:             wcfg,
+		Ignore:           icfg,
+		LineNumber:       opts.LineNumber,
+		Column:           opts.Column,
+		Count:            opts.Count,
+		FilesWithMatches: opts.FilesWithMatches,
+		Quiet:            opts.Quiet,
+		Json:             opts.Json,
+		Threads:          threads,
+	}, nil
 }
 
 func parseSize(s string) (int64, error) {
 	s = strings.TrimSpace(s)
 	if s == "" {
-		return 0, errors.New("empty size")
+		return 0, strconv.ErrSyntax
 	}
 
 	multiplier := int64(1)
@@ -149,4 +151,13 @@ func parseSize(s string) (int64, error) {
 		return 0, err
 	}
 	return n * multiplier, nil
+}
+
+func hasUppercase(s string) bool {
+	for _, r := range s {
+		if unicode.IsUpper(r) {
+			return true
+		}
+	}
+	return false
 }

@@ -1,6 +1,6 @@
 # AGENTS.md — ripgo
 
-Ripgrep-like search tool in Go. Idiomatic, standard-library-first, high performance.
+Ripgrep-like search tool in Go. Idiomatic, standard-library-first, high performance. Primarily a Go-native ripgrep library with a thin CLI.
 
 ## Stack
 
@@ -18,7 +18,7 @@ Ripgrep-like search tool in Go. Idiomatic, standard-library-first, high performa
 |---|---|
 | Build | `go build -o ripgo ./cmd/ripgo` |
 | Install | `go install ./cmd/ripgo` |
-| Test | `go test ./internal/...` |
+| Test | `go test ./...` |
 | Vet | `go vet ./...` |
 | Format | `goimports -w . && gofumpt -w .` |
 | Tidy | `go mod tidy` |
@@ -36,22 +36,42 @@ Ripgrep-like search tool in Go. Idiomatic, standard-library-first, high performa
 ## Architecture
 
 ```
-cmd/ripgo/main.go       — pipeline orchestration
-internal/cli             — Kong flag parsing
-internal/config          — validated runtime Config
-internal/pattern         — regex/fixed-string Matcher
-internal/ignore          — .gitignore/.ignore engine + glob
-internal/walk            — parallel directory traversal
-internal/filetype        — binary/hidden detection
-internal/search          — line-mode scanning
-internal/printer         — text/JSON/count/files output
-internal/stats           — match counts and exit codes
+# Public library (importable)
+pattern/            — Matcher interface, LiteralMatcher, RegexMatcher
+search/             — Searcher, Result, Match, Config
+walk/               — Walker, binary detection, directory traversal
+ignore/             — Engine, rule parsing, glob matching
+printer/            — Printer interface + Text/JSON/Count/Files
+stats/              — Stats, match counts
+
+# Private (CLI wiring only)
+internal/cli        — Kong flag parsing
+internal/config     — CLI flags → library Config translation
+
+# Binary
+cmd/ripgo/main.go   — thin pipeline orchestration
 ```
+
+Dependency graph:
+```
+pattern ◄── search ◄── walk
+   ▲          ▲         ▲
+   │          │      ignore
+   └── printer ◄── stats
+
+cli ◄── config ──► wires everything
+```
+
+Public packages own their config structs. `internal/config` translates CLI flags into library configs. No public package imports anything `internal/`.
 
 ## Verification
 
 After any change:
 1. `go build ./cmd/ripgo` — must compile
-2. `go test ./internal/...` — all tests pass
+2. `go test ./...` — all tests pass
 3. `go vet ./...` — clean
 4. `timeout 5 ripgo "pattern" .` — search works, exits cleanly
+
+## CLI vs Library
+
+The CLI (`cmd/ripgo`) is for testing, benchmarking, and rg comparison. The primary deliverable is the library packages (`pattern/`, `search/`, `walk/`, `ignore/`). External tools should be able to `import "github.com/nijaru/ripgo/search"` without pulling in any CLI dependencies.
