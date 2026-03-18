@@ -48,13 +48,13 @@ func NewTextPrinter(cfg TextConfig) *TextPrinter {
 }
 
 func (p *TextPrinter) PrintResult(r search.Result) error {
-	if len(r.Matches) == 0 {
-		return nil
-	}
-
 	// Use entries if available (context lines), otherwise fall back to matches.
 	if len(r.Entries) > 0 {
 		return p.printEntries(r)
+	}
+
+	if len(r.Matches) == 0 {
+		return nil
 	}
 
 	for _, m := range r.Matches {
