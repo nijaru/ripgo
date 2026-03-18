@@ -38,3 +38,41 @@ func TestRecordNoMatch(t *testing.T) {
 		t.Errorf("FilesSearched = %d, want 1", st.FilesSearched())
 	}
 }
+
+func BenchmarkRecordMatch(b *testing.B) {
+	r := search.Result{
+		Path:    "test.go",
+		Matches: []search.Match{{Line: 1}, {Line: 2}, {Line: 3}},
+	}
+	b.ResetTimer()
+	for range b.N {
+		var st Stats
+		st.RecordMatch(r)
+	}
+}
+
+func BenchmarkRecordNoMatch(b *testing.B) {
+	r := search.Result{Path: "empty.go"}
+	b.ResetTimer()
+	for range b.N {
+		var st Stats
+		st.RecordMatch(r)
+	}
+}
+
+func BenchmarkRecordMany(b *testing.B) {
+	results := make([]search.Result, 100)
+	for i := range results {
+		results[i] = search.Result{
+			Path:    "file.go",
+			Matches: []search.Match{{Line: i + 1}},
+		}
+	}
+	b.ResetTimer()
+	for range b.N {
+		var st Stats
+		for _, r := range results {
+			st.RecordMatch(r)
+		}
+	}
+}
