@@ -93,101 +93,83 @@ func matchGlob(pattern, path string) bool {
 // matchGlobStar handles patterns containing **.
 // ** matches zero or more path components (including /).
 func matchGlobStar(pattern, path string) bool {
-	parts := strings.Split(pattern, "**")
+	// Split on ** without pre-allocating: extract segments lazily.
+	// Pattern "a/**/b" has before="", after="b" between ** markers.
 	pathParts := strings.Split(path, "/")
-
-	// If pattern starts with **, match any prefix
-	// If ends with **, match any suffix
-	// Middle **, match any number of components
-
-	return matchGlobStarParts(parts, pathParts, 0, 0)
+	return matchGlobStarPartsOpt(pattern, pathParts, 0)
 }
 
-// matchGlobStarParts recursively matches pattern segments against path segments.
-// pi = index into pattern parts, si = index into path parts.
-func matchGlobStarParts(parts []string, pathParts []string, pi, si int) bool {
-	if pi == len(parts) {
-		// All pattern parts consumed — must also consume all path parts
-		// (unless last pattern part was ** at the end, handled by empty string match)
+// matchGlobStarPartsOpt matches a glob pattern containing ** against path segments.
+// It extracts pattern segments between ** markers on demand instead of pre-splitting.
+func matchGlobStarPartsOpt(pattern string, pathParts []string, si int) bool {
+	if pattern == "" {
 		return si == len(pathParts)
 	}
 
-	part := parts[pi]
-	isLast := pi == len(parts)-1
+	// Find the next ** marker
+	starIdx := strings.Index(pattern, "**")
+	if starIdx < 0 {
+		// No more ** — remaining pattern must match remaining path as a single unit
+		remaining := strings.Join(pathParts[si:], "/")
+		ok, _ := filepath.Match(pattern, remaining)
+		return ok
+	}
 
-	if part == "" {
-		// Empty part means ** was at start, end, or adjacent to another **
-		// This matches zero or more path components
-		if isLast {
-			return true // trailing ** matches everything remaining
+	// Extract the segment before ** (what must match before the wildcard)
+	before := pattern[:starIdx]
+	// Remainder after ** (strip leading slash if present)
+	after := pattern[starIdx+2:]
+	if len(after) > 0 && after[0] == '/' {
+		after = after[1:]
+	}
+
+	if before == "" {
+		// Pattern starts with ** — try matching zero or more components
+		if after == "" {
+			return true // trailing ** matches everything
 		}
-		// Try matching zero components (skip **)
-		if matchGlobStarParts(parts, pathParts, pi+1, si) {
-			return true
-		}
-		// Try matching one or more components
-		for i := si + 1; i <= len(pathParts); i++ {
-			if matchGlobStarParts(parts, pathParts, pi+1, i) {
+		// Try consuming 0, 1, 2, ... path components
+		for i := si; i <= len(pathParts); i++ {
+			if matchGlobStarPartsOpt(after, pathParts, i) {
 				return true
 			}
 		}
 		return false
 	}
 
-	// Non-empty part: must match some path components
-	// If part contains /, it spans multiple components
-	if strings.Contains(part, "/") {
-		// Rejoin remaining path and match
-		remainingPath := strings.Join(pathParts[si:], "/")
-		// Clean the part (remove leading/trailing slashes from the ** split)
-		part = strings.Trim(part, "/")
-		if part == "" {
-			// Was something like "**/**" — just skip
-			if isLast {
-				return si == len(pathParts)
-			}
-			return matchGlobStarParts(parts, pathParts, pi+1, si)
-		}
-		ok, _ := filepath.Match(part, remainingPath)
-		if ok && isLast {
-			return true
-		}
-		if ok {
-			// Matched but more pattern parts remain — this shouldn't normally
-			// happen with ** patterns where literal parts are between ** markers
-			return matchGlobStarParts(parts, pathParts, pi+1, len(pathParts))
-		}
-		// Also try just the next path component
-		if si < len(pathParts) {
-			ok, _ := filepath.Match(part, pathParts[si])
+	// 'before' must match starting from si.
+	// If before contains a slash, join path components and match.
+	// Otherwise, match a single path component.
+	if strings.Contains(before, "/") {
+		for end := si + 1; end <= len(pathParts); end++ {
+			candidate := strings.Join(pathParts[si:end], "/")
+			ok, _ := filepath.Match(before, candidate)
 			if ok {
-				if isLast && si+1 == len(pathParts) {
+				if after == "" {
+					return end == len(pathParts)
+				}
+				if matchGlobStarPartsOpt(after, pathParts, end) {
 					return true
 				}
-				if isLast {
-					return false
-				}
-				return matchGlobStarParts(parts, pathParts, pi+1, si+1)
 			}
 		}
 		return false
 	}
 
-	// Single-segment part: match one path component
+	// Single-segment: before must match exactly one path component
 	if si >= len(pathParts) {
 		return false
 	}
-
-	ok, _ := filepath.Match(part, pathParts[si])
+	ok, _ := filepath.Match(before, pathParts[si])
 	if !ok {
 		return false
 	}
 
-	if isLast {
+	if after == "" {
 		return si+1 == len(pathParts)
 	}
 
-	return matchGlobStarParts(parts, pathParts, pi+1, si+1)
+	return matchGlobStarPartsOpt(after, pathParts, si+1)
 }
 
 // IgnoreSet holds all ignore rules for one ignore file (.gitignore/.ignore).
@@ -207,11 +189,11 @@ type IgnoreSet struct {
 func (s *IgnoreSet) IsIgnored(relPath string, isDir bool) bool {
 	// Step 1: check if any ancestor directory is ignored by parent rules.
 	if s.Parent != nil {
-		parts := strings.Split(relPath, "/")
-		for i := 0; i < len(parts)-1; i++ {
-			ancestor := strings.Join(parts[:i+1], "/")
-			if s.Parent.isIgnoredBySelf(ancestor, true) {
-				return true
+		for i := 0; i < len(relPath); i++ {
+			if relPath[i] == '/' {
+				if s.Parent.isIgnoredBySelf(relPath[:i], true) {
+					return true
+				}
 			}
 		}
 	}
@@ -250,11 +232,12 @@ func (s *IgnoreSet) matchRules(relPath string, isDir bool) (ignored bool, matche
 
 // Engine manages ignore rules and glob filters for file traversal.
 type Engine struct {
-	cfg      Config
-	includes []glob.Glob
-	excludes []glob.Glob
-	sets     map[string]*IgnoreSet
-	mu       sync.Mutex
+	cfg          Config
+	includes     []glob.Glob
+	excludes     []glob.Glob
+	sets         map[string]*IgnoreSet
+	mu           sync.Mutex
+	baseRelSlash string // path from cwd, forward-slash form (cached for ShouldIgnore)
 }
 
 // NewEngine creates an ignore engine from the given config.
@@ -264,6 +247,17 @@ func NewEngine(cfg Config) (*Engine, error) {
 		sets:     make(map[string]*IgnoreSet),
 		includes: make([]glob.Glob, 0, len(cfg.GlobIncludes)),
 		excludes: make([]glob.Glob, 0, len(cfg.GlobExcludes)),
+	}
+
+	// Pre-compute the cwd-relative path to avoid per-file filepath.Rel calls.
+	if cwd, err := os.Getwd(); err == nil {
+		rel, err := filepath.Rel(".", cwd)
+		if err == nil {
+			engine.baseRelSlash = filepath.ToSlash(rel)
+		}
+	}
+	if engine.baseRelSlash == "." {
+		engine.baseRelSlash = ""
 	}
 
 	for _, p := range cfg.GlobIncludes {
@@ -379,15 +373,15 @@ func (e *Engine) LoadIgnoreFile(dir string) error {
 
 // ShouldIgnore returns true if the path should be excluded from traversal.
 func (e *Engine) ShouldIgnore(path string, isDir bool) bool {
-	relPath, err := filepath.Rel(".", path)
-	if err != nil {
-		relPath = path
+	clean := filepath.Clean(path)
+	relSlash := filepath.ToSlash(clean)
+	if e.baseRelSlash != "" {
+		relSlash = relSlash[len(e.baseRelSlash)+1:]
 	}
-	relPath = filepath.ToSlash(relPath)
 
 	// CLI globs always take precedence
 	for _, g := range e.excludes {
-		if g.Match(relPath) {
+		if g.Match(relSlash) {
 			return true
 		}
 	}
@@ -395,7 +389,7 @@ func (e *Engine) ShouldIgnore(path string, isDir bool) bool {
 	if len(e.includes) > 0 {
 		matched := false
 		for _, g := range e.includes {
-			if g.Match(relPath) {
+			if g.Match(relSlash) {
 				matched = true
 				break
 			}
@@ -405,19 +399,17 @@ func (e *Engine) ShouldIgnore(path string, isDir bool) bool {
 		}
 	}
 
-	// Hidden file check
+	// Hidden file check — scan for path components starting with '.'
 	if !e.cfg.Hidden {
-		parts := strings.Split(relPath, "/")
-		for _, p := range parts {
-			if len(p) > 0 && p[0] == '.' {
+		for i := 0; i < len(relSlash); i++ {
+			if relSlash[i] == '.' && (i == 0 || relSlash[i-1] == '/') {
 				return true
 			}
 		}
 	}
 
 	// Check ignore file rules via chain
-	dir := filepath.Dir(filepath.Clean(path))
-	dir = filepath.Clean(dir)
+	dir := filepath.Dir(clean)
 
 	e.mu.Lock()
 	set, ok := e.sets[dir]
@@ -429,23 +421,30 @@ func (e *Engine) ShouldIgnore(path string, isDir bool) bool {
 
 	// If the directory itself is ignored by parent rules, everything inside is ignored
 	if set.Parent != nil {
-		dirRel, err := filepath.Rel(set.Parent.Dir, dir)
-		if err == nil {
-			dirRel = filepath.ToSlash(dirRel)
-			if set.Parent.isIgnoredBySelf(dirRel, true) {
-				return true
-			}
+		dirRelSlash := relSlash
+		if idx := strings.LastIndexByte(relSlash, '/'); idx >= 0 {
+			dirRelSlash = relSlash[:idx]
+		}
+		if set.Parent.isIgnoredBySelf(dirRelSlash, true) {
+			return true
 		}
 	}
 
 	// Compute path relative to this ignore set's directory
-	setRel, err := filepath.Rel(set.Dir, filepath.Clean(path))
-	if err != nil {
-		return false
+	var setRelSlash string
+	if set.Dir == "." || set.Dir == clean {
+		setRelSlash = relSlash
+	} else if len(clean) > len(set.Dir)+1 && clean[len(set.Dir)] == '/' && clean[:len(set.Dir)] == set.Dir {
+		setRelSlash = clean[len(set.Dir)+1:]
+	} else {
+		setRel, err := filepath.Rel(set.Dir, clean)
+		if err != nil {
+			return false
+		}
+		setRelSlash = filepath.ToSlash(setRel)
 	}
-	setRel = filepath.ToSlash(setRel)
 
-	return set.IsIgnored(setRel, isDir)
+	return set.IsIgnored(setRelSlash, isDir)
 }
 
 // GetIgnoreRules returns the loaded ignore rules for a directory.

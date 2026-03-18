@@ -113,3 +113,43 @@ func TestSmartCase(t *testing.T) {
 		t.Error("expected case-sensitive for pattern with uppercase")
 	}
 }
+
+func BenchmarkPattern(b *testing.B) {
+	lines := []string{
+		"func main() {",
+		"	fmt.Println(\"hello world\")",
+		"}",
+		"// TODO: refactor this",
+		"var x = 42",
+	}
+
+	b.Run("literal_compile", func(b *testing.B) {
+		for b.Loop() {
+			New(Config{Pattern: "fmt"})
+		}
+	})
+
+	m, _ := New(Config{Pattern: "fmt"})
+	b.Run("literal_match", func(b *testing.B) {
+		for b.Loop() {
+			for _, line := range lines {
+				m.Match([]byte(line))
+			}
+		}
+	})
+
+	b.Run("regex_compile", func(b *testing.B) {
+		for b.Loop() {
+			New(Config{Pattern: `func\s+\w+`})
+		}
+	})
+
+	re, _ := New(Config{Pattern: `func\s+\w+`})
+	b.Run("regex_match", func(b *testing.B) {
+		for b.Loop() {
+			for _, line := range lines {
+				re.Match([]byte(line))
+			}
+		}
+	})
+}

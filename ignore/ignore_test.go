@@ -590,3 +590,42 @@ func BenchmarkMatchPattern(b *testing.B) {
 		})
 	}
 }
+
+// BenchmarkShouldIgnore measures the full per-file filtering cost.
+func BenchmarkShouldIgnore(b *testing.B) {
+	dir := b.TempDir()
+	gitignore := "*.log\n*.tmp\nbuild/\nnode_modules/\n.git/\n"
+	if err := os.WriteFile(filepath.Join(dir, ".gitignore"), []byte(gitignore), 0o644); err != nil {
+		b.Fatal(err)
+	}
+
+	engine, err := NewEngine(Config{})
+	if err != nil {
+		b.Fatal(err)
+	}
+	if err := engine.LoadIgnoreFile(dir); err != nil {
+		b.Fatal(err)
+	}
+
+	// Pre-compute the paths we'll test
+	type testCase struct {
+		name string
+		path string
+		dir  bool
+	}
+	paths := []testCase{
+		{"source file", filepath.Join(dir, "src/main.go"), false},
+		{"gitignore match", filepath.Join(dir, "debug.log"), false},
+		{"deep nested", filepath.Join(dir, "src/pkg/utils/helper.go"), false},
+		{"build dir", filepath.Join(dir, "build"), true},
+		{"hidden file", filepath.Join(dir, ".hidden"), false},
+	}
+
+	for _, tc := range paths {
+		b.Run(tc.name, func(b *testing.B) {
+			for b.Loop() {
+				engine.ShouldIgnore(tc.path, tc.dir)
+			}
+		})
+	}
+}

@@ -287,3 +287,33 @@ func TestSearchContextWithMaxCount(t *testing.T) {
 		t.Fatalf("expected 3 entries, got %d", len(result.Entries))
 	}
 }
+
+func BenchmarkSearch(b *testing.B) {
+	// Search the real search.go file for "func" — representative workload
+	m, _ := pattern.New(pattern.Config{Pattern: "func"})
+	s := NewSearcher(Config{}, m)
+
+	b.Run("literal", func(b *testing.B) {
+		for b.Loop() {
+			s.Search("search.go")
+		}
+	})
+
+	b.Run("with_context", func(b *testing.B) {
+		sCtx := NewSearcher(Config{Before: 2, After: 2}, m)
+		for b.Loop() {
+			sCtx.Search("search.go")
+		}
+	})
+}
+
+func BenchmarkSearchRegex(b *testing.B) {
+	m, _ := pattern.New(pattern.Config{Pattern: `func\s+\w+`})
+	s := NewSearcher(Config{}, m)
+
+	b.Run("regex", func(b *testing.B) {
+		for b.Loop() {
+			s.Search("search.go")
+		}
+	})
+}

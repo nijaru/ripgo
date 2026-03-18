@@ -71,6 +71,49 @@ func NewSearcher(cfg Config, matcher pattern.Matcher) *Searcher {
 func (s *Searcher) Search(path string) (Result, error) {
 	result := Result{Path: path}
 
+	needContext := s.cfg.Before > 0 || s.cfg.After > 0
+
+	// For context mode, read the entire file so all line data lives in a
+	// single contiguous buffer. Lines are sub-slices of this buffer,
+	// avoiding per-line allocations.
+	if needContext {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return result, err
+		}
+
+		lines := bytes.Split(data, []byte("\n"))
+		// Trim trailing empty element from files ending with \n
+		if len(lines) > 0 && len(lines[len(lines)-1]) == 0 {
+			lines = lines[:len(lines)-1]
+		}
+		matchCount := 0
+		var matchLines []int
+
+		for i, line := range lines {
+			lineNum := i + 1
+			locs, ok := s.matcher.Match(line)
+			if ok && (s.cfg.MaxCount == 0 || matchCount < s.cfg.MaxCount) {
+				match := Match{
+					Line:       lineNum,
+					Column:     locs[0] + 1,
+					LineBytes:  line,
+					Submatches: [][2]int{{locs[0], locs[1]}},
+				}
+				result.Matches = append(result.Matches, match)
+				matchLines = append(matchLines, lineNum)
+				matchCount++
+			}
+		}
+
+		if len(matchLines) > 0 {
+			result.Entries = s.buildEntries(lines, matchLines, result.Matches)
+		}
+
+		return result, nil
+	}
+
+	// Non-context: stream line-by-line, break early on MaxCount.
 	file, err := os.Open(path)
 	if err != nil {
 		return result, err
@@ -81,19 +124,9 @@ func (s *Searcher) Search(path string) (Result, error) {
 	lineNum := 0
 	matchCount := 0
 
-	// When context is requested, buffer all lines for context computation.
-	needContext := s.cfg.Before > 0 || s.cfg.After > 0
-	var lines [][]byte
-	var matchLines []int
-
 	for scanner.Scan() {
 		lineNum++
 		line := scanner.Bytes()
-
-		// When context is requested, buffer all lines.
-		if needContext {
-			lines = append(lines, bytes.Clone(line))
-		}
 
 		locs, ok := s.matcher.Match(line)
 		if ok && (s.cfg.MaxCount == 0 || matchCount < s.cfg.MaxCount) {
@@ -106,11 +139,7 @@ func (s *Searcher) Search(path string) (Result, error) {
 			result.Matches = append(result.Matches, match)
 			matchCount++
 
-			if needContext {
-				matchLines = append(matchLines, lineNum)
-			}
-
-			if s.cfg.MaxCount > 0 && matchCount >= s.cfg.MaxCount && !needContext {
+			if s.cfg.MaxCount > 0 && matchCount >= s.cfg.MaxCount {
 				break
 			}
 		}
@@ -118,10 +147,6 @@ func (s *Searcher) Search(path string) (Result, error) {
 
 	if err := scanner.Err(); err != nil {
 		return result, err
-	}
-
-	if needContext && len(matchLines) > 0 {
-		result.Entries = s.buildEntries(lines, matchLines, result.Matches)
 	}
 
 	return result, nil
@@ -195,6 +220,9 @@ func (s *Searcher) SearchMultiline(path string) (Result, error) {
 
 	if s.matcher.MatchFile(data) {
 		lines := bytes.Split(data, []byte("\n"))
+		if len(lines) > 0 && len(lines[len(lines)-1]) == 0 {
+			lines = lines[:len(lines)-1]
+		}
 		for i, line := range lines {
 			if _, ok := s.matcher.Match(line); ok {
 				match := Match{
