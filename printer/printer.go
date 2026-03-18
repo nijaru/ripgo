@@ -52,18 +52,55 @@ func (p *TextPrinter) PrintResult(r search.Result) error {
 		return nil
 	}
 
+	// Use entries if available (context lines), otherwise fall back to matches.
+	if len(r.Entries) > 0 {
+		return p.printEntries(r)
+	}
+
 	for _, m := range r.Matches {
-		line := string(m.LineBytes)
-		switch {
-		case p.lineNumber && p.column:
-			fmt.Fprintf(p.w, "%s:%d:%d:%s\n", r.Path, m.Line, m.Column, line)
-		case p.lineNumber:
-			fmt.Fprintf(p.w, "%s:%d:%s\n", r.Path, m.Line, line)
-		default:
-			fmt.Fprintf(p.w, "%s:%s\n", r.Path, line)
-		}
+		p.printMatchLine(r.Path, m.Line, m.Column, string(m.LineBytes))
 	}
 	return nil
+}
+
+// printEntries prints ordered match + context entries with group separators.
+func (p *TextPrinter) printEntries(r search.Result) error {
+	prevLine := 0
+	for _, e := range r.Entries {
+		// Insert group separator for non-contiguous lines.
+		if prevLine > 0 && e.Line != prevLine+1 {
+			fmt.Fprintln(p.w, "--")
+		}
+
+		if e.Kind == search.EntryMatch {
+			p.printMatchLine(r.Path, e.Line, e.Column, string(e.LineBytes))
+		} else {
+			p.printContextLine(r.Path, e.Line, string(e.LineBytes))
+		}
+		prevLine = e.Line
+	}
+	return nil
+}
+
+// printMatchLine prints a line with a match (colon separator).
+func (p *TextPrinter) printMatchLine(path string, line, col int, content string) {
+	switch {
+	case p.lineNumber && p.column:
+		fmt.Fprintf(p.w, "%s:%d:%d:%s\n", path, line, col, content)
+	case p.lineNumber:
+		fmt.Fprintf(p.w, "%s:%d:%s\n", path, line, content)
+	default:
+		fmt.Fprintf(p.w, "%s:%s\n", path, content)
+	}
+}
+
+// printContextLine prints a context line (dash separator).
+func (p *TextPrinter) printContextLine(path string, line int, content string) {
+	if p.lineNumber {
+		fmt.Fprintf(p.w, "%s-%d-%s\n", path, line, content)
+	} else {
+		fmt.Fprintf(p.w, "%s-%s\n", path, content)
+	}
 }
 
 func (p *TextPrinter) Finish(_ stats.Stats) error {
