@@ -69,7 +69,7 @@ func TestWalkerBasic(t *testing.T) {
 	})
 
 	engine := newTestEngine(t, ignore.Config{NoIgnore: true, Hidden: true})
-	w := NewWalker(Config{Threads: 2}, engine)
+	w := NewWalker(nil, Config{Threads: 2}, engine)
 	files := collectFiles(t, w, root)
 
 	want := []string{"a.txt", "b.go", "sub/c.txt", "sub/d.go", "sub/e.go"}
@@ -89,7 +89,7 @@ func TestWalkerSingleFile(t *testing.T) {
 	})
 
 	engine := newTestEngine(t, ignore.Config{NoIgnore: true, Hidden: true})
-	w := NewWalker(Config{}, engine)
+	w := NewWalker(nil, Config{}, engine)
 	files := collectFiles(t, w, root)
 
 	if len(files) != 1 || files[0] != "only.txt" {
@@ -101,7 +101,7 @@ func TestWalkerEmptyDir(t *testing.T) {
 	root := t.TempDir()
 
 	engine := newTestEngine(t, ignore.Config{NoIgnore: true, Hidden: true})
-	w := NewWalker(Config{}, engine)
+	w := NewWalker(nil, Config{}, engine)
 	files := collectFiles(t, w, root)
 
 	if len(files) != 0 {
@@ -122,7 +122,7 @@ func TestWalkerRespectsGitignore(t *testing.T) {
 	})
 
 	engine := newTestEngine(t, ignore.Config{Hidden: true})
-	w := NewWalker(Config{Threads: 1}, engine)
+	w := NewWalker(nil, Config{Threads: 1}, engine)
 	files := collectFiles(t, w, root)
 
 	want := []string{".gitignore", "main.go", "src/util.go"}
@@ -144,7 +144,7 @@ func TestWalkerHiddenFiles(t *testing.T) {
 
 	// Without Hidden flag, dotfiles are ignored
 	engine := newTestEngine(t, ignore.Config{NoIgnore: true})
-	w := NewWalker(Config{}, engine)
+	w := NewWalker(nil, Config{}, engine)
 	files := collectFiles(t, w, root)
 
 	if len(files) != 1 || files[0] != "visible.txt" {
@@ -153,7 +153,7 @@ func TestWalkerHiddenFiles(t *testing.T) {
 
 	// With Hidden flag, dotfiles are included
 	engine2 := newTestEngine(t, ignore.Config{NoIgnore: true, Hidden: true})
-	w2 := NewWalker(Config{}, engine2)
+	w2 := NewWalker(nil, Config{}, engine2)
 	files2 := collectFiles(t, w2, root)
 
 	want := []string{".hidden", "visible.txt"}
@@ -174,73 +174,12 @@ func TestWalkerGlobExclude(t *testing.T) {
 		Hidden:       true,
 		GlobExcludes: []string{"*.md"},
 	})
-	w := NewWalker(Config{}, engine)
+	w := NewWalker(nil, Config{}, engine)
 	files := collectFiles(t, w, root)
 
 	want := []string{"main.go", "test.go"}
 	if len(files) != len(want) {
 		t.Fatalf("got %v, want %v", files, want)
-	}
-}
-
-// --- Binary filtering ---
-
-func TestWalkerSkipsBinaryByDefault(t *testing.T) {
-	root, _ := setupTestDir(t, map[string]string{
-		"text.txt": "hello world",
-	})
-
-	// Write a binary file with NUL bytes
-	binPath := filepath.Join(root, "data.bin")
-	if err := os.WriteFile(binPath, []byte("hello\x00world"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	engine := newTestEngine(t, ignore.Config{NoIgnore: true, Hidden: true})
-	w := NewWalker(Config{}, engine)
-	files := collectFiles(t, w, root)
-
-	if len(files) != 1 || files[0] != "text.txt" {
-		t.Fatalf("got %v, want [text.txt]", files)
-	}
-}
-
-func TestWalkerSearchBinary(t *testing.T) {
-	root, _ := setupTestDir(t, map[string]string{
-		"text.txt": "hello world",
-	})
-
-	binPath := filepath.Join(root, "data.bin")
-	if err := os.WriteFile(binPath, []byte("hello\x00world"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	engine := newTestEngine(t, ignore.Config{NoIgnore: true, Hidden: true})
-	w := NewWalker(Config{SearchBinary: true}, engine)
-	files := collectFiles(t, w, root)
-
-	want := []string{"data.bin", "text.txt"}
-	if len(files) != len(want) {
-		t.Fatalf("got %v, want %v", files, want)
-	}
-}
-
-func TestWalkerOnlyBinary(t *testing.T) {
-	root, _ := setupTestDir(t, map[string]string{
-		"text.txt": "hello world",
-	})
-
-	binPath := filepath.Join(root, "data.bin")
-	if err := os.WriteFile(binPath, []byte("hello\x00world"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	engine := newTestEngine(t, ignore.Config{NoIgnore: true, Hidden: true})
-	w := NewWalker(Config{OnlyBinary: true}, engine)
-	files := collectFiles(t, w, root)
-
-	if len(files) != 1 || files[0] != "data.bin" {
-		t.Fatalf("got %v, want [data.bin]", files)
 	}
 }
 
@@ -253,7 +192,7 @@ func TestWalkerMaxFileSize(t *testing.T) {
 	})
 
 	engine := newTestEngine(t, ignore.Config{NoIgnore: true, Hidden: true})
-	w := NewWalker(Config{MaxFileSize: 10}, engine)
+	w := NewWalker(nil, Config{MaxFileSize: 10}, engine)
 	files := collectFiles(t, w, root)
 
 	if len(files) != 1 || files[0] != "small.txt" {
@@ -271,7 +210,7 @@ func TestWalkerContextCancel(t *testing.T) {
 	})
 
 	engine := newTestEngine(t, ignore.Config{NoIgnore: true, Hidden: true})
-	w := NewWalker(Config{}, engine)
+	w := NewWalker(nil, Config{}, engine)
 
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel() // cancel immediately
@@ -294,7 +233,7 @@ func TestWalkerMultipleRoots(t *testing.T) {
 	os.WriteFile(filepath.Join(dir2, "b.txt"), []byte("b"), 0o644)
 
 	engine := newTestEngine(t, ignore.Config{NoIgnore: true, Hidden: true})
-	w := NewWalker(Config{}, engine)
+	w := NewWalker(nil, Config{}, engine)
 
 	ctx := t.Context()
 	fileCh := make(chan string, 256)

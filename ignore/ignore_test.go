@@ -3,6 +3,7 @@ package ignore
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -564,6 +565,84 @@ func TestEngineAncestorDirectoryIgnored(t *testing.T) {
 	}
 	if !engine.ShouldIgnore(filepath.Join(subDir, "other.o"), false) {
 		t.Error("expected build/other.o to be ignored (parent ignores build/)")
+	}
+}
+
+func TestEngineTypeFilters(t *testing.T) {
+	t.Run("include_type", func(t *testing.T) {
+		engine, err := NewEngine(Config{
+			Types: []string{"go"},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		if engine.ShouldIgnore("main.go", false) {
+			t.Error("expected main.go to be included")
+		}
+		if !engine.ShouldIgnore("main.rs", false) {
+			t.Error("expected main.rs to be excluded")
+		}
+	})
+
+	t.Run("exclude_type", func(t *testing.T) {
+		engine, err := NewEngine(Config{
+			TypesNot: []string{"rust"},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		if engine.ShouldIgnore("main.go", false) {
+			t.Error("expected main.go to be included")
+		}
+		if !engine.ShouldIgnore("main.rs", false) {
+			t.Error("expected main.rs to be excluded")
+		}
+	})
+}
+
+func TestEngineExhaustiveGlobAudit(t *testing.T) {
+	// These cases are based on ripgrep's core ignore logic.
+	tests := []struct {
+		name     string
+		patterns []string
+		path     string
+		isDir    bool
+		expect   bool // true means ignored
+	}{
+		{"trailing slash matches dir", []string{"foo/"}, "foo", true, true},
+		{"trailing slash skips file", []string{"foo/"}, "foo", false, false},
+		{"anchored with trailing slash", []string{"/foo/"}, "foo", true, true},
+		{"anchored with trailing slash deep", []string{"/foo/"}, "bar/foo", true, false},
+		{"nested negation re-inclusion", []string{"/*", "!/src", "/src/*", "!/src/main.go"}, "src/main.go", false, false},
+		{"nested negation remains ignored", []string{"/*", "!/src", "/src/*", "!/src/main.go"}, "src/other.go", false, true},
+		{"deep star", []string{"**/foo"}, "bar/baz/foo", false, true},
+		{"leading star", []string{"*.log"}, "debug.log", false, true},
+		{"leading star deep", []string{"*.log"}, "a/b/c/debug.log", false, true},
+		{"complex nested negation", []string{"/a/*", "!/a/b/", "/a/b/*", "!/a/b/c"}, "a/b/c", false, false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			if err := os.WriteFile(filepath.Join(dir, ".gitignore"), []byte(strings.Join(tt.patterns, "\n")), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			engine, _ := NewEngine(Config{})
+			engine.LoadIgnoreFile(dir)
+			
+			// We need to pass the full path or ensure ShouldIgnore handles the relative path correctly.
+			// The engine uses cwd-relative logic.
+			fullPath := filepath.Join(dir, tt.path)
+			// Normalize for ShouldIgnore
+			clean := filepath.ToSlash(filepath.Clean(fullPath))
+			
+			got := engine.ShouldIgnore(clean, tt.isDir)
+			if got != tt.expect {
+				t.Errorf("ShouldIgnore(%q, dir=%v) = %v, want %v (patterns: %v)", tt.path, tt.isDir, got, tt.expect, tt.patterns)
+			}
+		})
 	}
 }
 

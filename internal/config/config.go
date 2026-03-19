@@ -1,6 +1,7 @@
 package config
 
 import (
+	"runtime"
 	"strconv"
 	"strings"
 	"unicode"
@@ -26,6 +27,7 @@ type Config struct {
 	FilesWithMatches bool
 	Quiet            bool
 	Json             bool
+	TypeList         bool
 	Threads          int
 }
 
@@ -70,7 +72,9 @@ func New(opts cli.Options) (*Config, error) {
 	}
 
 	scfg := search.Config{
-		MaxCount: opts.MaxCount,
+		MaxCount:     opts.MaxCount,
+		SearchBinary: !opts.NoBinary && !opts.OnlyBinary,
+		OnlyBinary:   opts.OnlyBinary,
 	}
 
 	if opts.Context > 0 {
@@ -84,8 +88,6 @@ func New(opts cli.Options) (*Config, error) {
 	wcfg := walk.Config{
 		Threads:        opts.Threads,
 		FollowSymlinks: opts.FollowSymlinks,
-		SearchBinary:   !opts.NoBinary && !opts.OnlyBinary,
-		OnlyBinary:     opts.OnlyBinary,
 	}
 
 	if opts.MaxFileSize != "" {
@@ -99,13 +101,15 @@ func New(opts cli.Options) (*Config, error) {
 	icfg := ignore.Config{
 		GlobIncludes: opts.GlobInclude,
 		GlobExcludes: opts.GlobExclude,
+		Types:        opts.Type,
+		TypesNot:     opts.TypeNot,
 		NoIgnore:     opts.NoIgnore,
 		Hidden:       opts.Hidden,
 	}
 
 	threads := opts.Threads
 	if threads <= 0 {
-		threads = 1
+		threads = runtime.GOMAXPROCS(0)
 	}
 
 	return &Config{
@@ -120,6 +124,7 @@ func New(opts cli.Options) (*Config, error) {
 		FilesWithMatches: opts.FilesWithMatches,
 		Quiet:            opts.Quiet,
 		Json:             opts.Json,
+		TypeList:         opts.TypeList,
 		Threads:          threads,
 	}, nil
 }

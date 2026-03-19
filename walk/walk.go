@@ -1,8 +1,9 @@
+// Package walk implements parallel directory traversal.
 package walk
 
 import (
-	"bytes"
 	"context"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -21,30 +22,26 @@ type Config struct {
 	FollowSymlinks bool
 	// MaxFileSize skips files larger than this. 0 means unlimited.
 	MaxFileSize int64
-	// SearchBinary includes binary files in results.
-	SearchBinary bool
-	// OnlyBinary restricts results to binary files only.
-	OnlyBinary bool
 }
 
 // Walker performs parallel directory traversal, emitting file paths.
 type Walker struct {
+	fs           fs.FS
 	cfg          Config
 	ignoreEngine *ignore.Engine
 	workers      int
 }
 
 // NewWalker creates a walker with the given config and ignore engine.
-func NewWalker(cfg Config, engine *ignore.Engine) *Walker {
+// If fsys is nil, it defaults to the local OS filesystem.
+func NewWalker(fsys fs.FS, cfg Config, engine *ignore.Engine) *Walker {
 	workers := cfg.Threads
 	if workers == 0 {
 		workers = runtime.GOMAXPROCS(0)
 	}
-	if workers > 4 {
-		workers = 4
-	}
 
 	return &Walker{
+		fs:           fsys,
 		cfg:          cfg,
 		ignoreEngine: engine,
 		workers:      workers,
@@ -64,7 +61,7 @@ func (w *Walker) Run(ctx context.Context, paths []string, fileCh chan<- string) 
 
 	for _, p := range paths {
 		pending.Add(1)
-		dirCh <- p
+		dirCh <- filepath.ToSlash(filepath.Clean(p))
 	}
 
 	for range w.workers {
@@ -94,7 +91,13 @@ func (w *Walker) walkWorker(ctx context.Context, dirCh chan string, fileCh chan<
 				return
 			}
 
-			entries, err := os.ReadDir(dir)
+			var entries []fs.DirEntry
+			var err error
+			if w.fs != nil {
+				entries, err = fs.ReadDir(w.fs, dir)
+			} else {
+				entries, err = os.ReadDir(dir)
+			}
 			if err != nil {
 				pending.Add(-1)
 				tryClose()
@@ -108,21 +111,33 @@ func (w *Walker) walkWorker(ctx context.Context, dirCh chan string, fileCh chan<
 					return
 				}
 
-				path := filepath.Join(dir, entry.Name())
+				name := entry.Name()
+				path := dir + "/" + name
+				if dir == "." {
+					path = name
+				}
 
 				if w.ignoreEngine.ShouldIgnore(path, entry.IsDir()) {
 					continue
 				}
 
 				if entry.IsDir() {
-					pending.Add(1)
-					select {
-					case <-ctx.Done():
-						return
-					case dirCh <- path:
-					}
-				} else {
-					if w.shouldSearch(path) {
+				        pending.Add(1)
+				        select {
+				        case <-ctx.Done():
+				                return
+				        case dirCh <- path:
+				        default:
+				                go func(p string) {
+				                        select {
+				                        case <-ctx.Done():
+				                                pending.Add(-1)
+				                                tryClose()
+				                        case dirCh <- p:
+				                        }
+				                }(path)
+				        }
+				} else {					if w.shouldSearch(path) {
 						select {
 						case <-ctx.Done():
 							return
@@ -139,7 +154,13 @@ func (w *Walker) walkWorker(ctx context.Context, dirCh chan string, fileCh chan<
 }
 
 func (w *Walker) shouldSearch(path string) bool {
-	info, err := os.Stat(path)
+	var info fs.FileInfo
+	var err error
+	if w.fs != nil {
+		info, err = fs.Stat(w.fs, path)
+	} else {
+		info, err = os.Stat(path)
+	}
 	if err != nil {
 		return false
 	}
@@ -148,30 +169,5 @@ func (w *Walker) shouldSearch(path string) bool {
 		return false
 	}
 
-	if !w.cfg.SearchBinary && !w.cfg.OnlyBinary {
-		if IsBinary(path) {
-			return false
-		}
-	} else if w.cfg.OnlyBinary && !IsBinary(path) {
-		return false
-	}
-
 	return true
-}
-
-// IsBinary detects binary files by checking for NUL bytes in the first 8KB.
-func IsBinary(path string) bool {
-	f, err := os.Open(path)
-	if err != nil {
-		return false
-	}
-	defer f.Close()
-
-	buf := make([]byte, 8192)
-	n, err := f.Read(buf)
-	if err != nil {
-		return false
-	}
-
-	return bytes.Contains(buf[:n], []byte{0})
 }

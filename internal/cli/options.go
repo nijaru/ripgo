@@ -22,6 +22,9 @@ type Options struct {
 	MaxFileSize      string   `name:"max-filesize" help:"Ignore files larger than size"`
 	GlobInclude      []string `name:"glob" help:"Include files matching glob"`
 	GlobExclude      []string `name:"glob-not" help:"Exclude files matching glob"`
+	Type             []string `short:"t" help:"Search only files of this type"`
+	TypeNot          []string `short:"T" help:"Do not search files of this type"`
+	TypeList         bool     `name:"type-list" help:"Show all supported file types"`
 	NoBinary         bool     `name:"no-binary" help:"Don't search binary files"`
 	OnlyBinary       bool     `name:"only-binary" help:"Search only binary files"`
 	Json             bool     `name:"json" help:"JSON output"`

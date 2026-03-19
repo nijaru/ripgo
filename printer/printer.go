@@ -1,6 +1,8 @@
+// Package printer implements various output formats for search results.
 package printer
 
 import (
+	"bufio"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -47,6 +49,7 @@ func NewTextPrinter(cfg TextConfig) *TextPrinter {
 	}
 }
 
+// PrintResult outputs search results for a single file.
 func (p *TextPrinter) PrintResult(r search.Result) error {
 	// Use entries if available (context lines), otherwise fall back to matches.
 	if len(r.Entries) > 0 {
@@ -103,6 +106,7 @@ func (p *TextPrinter) printContextLine(path string, line int, content string) {
 	}
 }
 
+// Finish is a no-op for TextPrinter.
 func (p *TextPrinter) Finish(_ stats.Stats) error {
 	return nil
 }
@@ -120,11 +124,13 @@ func NewCountPrinter(w io.Writer) *CountPrinter {
 	return &CountPrinter{w: w}
 }
 
+// PrintResult outputs the match count for a single file.
 func (p *CountPrinter) PrintResult(r search.Result) error {
 	fmt.Fprintf(p.w, "%s:%d\n", r.Path, len(r.Matches))
 	return nil
 }
 
+// Finish is a no-op for CountPrinter.
 func (p *CountPrinter) Finish(_ stats.Stats) error {
 	return nil
 }
@@ -143,6 +149,7 @@ func NewFilesPrinter(w io.Writer) *FilesPrinter {
 	return &FilesPrinter{w: w, seen: make(map[string]bool)}
 }
 
+// PrintResult outputs the file path if it has matches and hasn't been printed yet.
 func (p *FilesPrinter) PrintResult(r search.Result) error {
 	if len(r.Matches) > 0 && !p.seen[r.Path] {
 		p.seen[r.Path] = true
@@ -151,30 +158,56 @@ func (p *FilesPrinter) PrintResult(r search.Result) error {
 	return nil
 }
 
+// Finish is a no-op for FilesPrinter.
 func (p *FilesPrinter) Finish(_ stats.Stats) error {
 	return nil
 }
 
 // JSONPrinter outputs results as JSON.
 type JSONPrinter struct {
-	results []search.Result
+	w     *bufio.Writer
+	enc   *json.Encoder
+	first bool
 }
 
 // NewJSONPrinter creates a JSON printer.
-func NewJSONPrinter() *JSONPrinter {
-	return &JSONPrinter{}
-}
-
-func (p *JSONPrinter) PrintResult(r search.Result) error {
-	p.results = append(p.results, r)
-	return nil
-}
-
-func (p *JSONPrinter) Finish(_ stats.Stats) error {
-	data, err := json.Marshal(p.results)
-	if err != nil {
-		return err
+func NewJSONPrinter(w io.Writer) *JSONPrinter {
+	if w == nil {
+		w = os.Stdout
 	}
-	_, err = os.Stdout.Write(data)
-	return err
+	return &JSONPrinter{
+		w:     bufio.NewWriter(w),
+		first: true,
+	}
+}
+
+// PrintResult streams the result as JSON.
+func (p *JSONPrinter) PrintResult(r search.Result) error {
+	if p.first {
+		if _, err := p.w.Write([]byte("[")); err != nil {
+			return err
+		}
+		p.enc = json.NewEncoder(p.w)
+		p.first = false
+	} else {
+		if _, err := p.w.Write([]byte(",")); err != nil {
+			return err
+		}
+	}
+	return p.enc.Encode(r)
+}
+
+// Finish writes the closing bracket for the JSON array and flushes.
+func (p *JSONPrinter) Finish(_ stats.Stats) error {
+	if p.first {
+		// No results printed
+		if _, err := p.w.Write([]byte("[]")); err != nil {
+			return err
+		}
+	} else {
+		if _, err := p.w.Write([]byte("]")); err != nil {
+			return err
+		}
+	}
+	return p.w.Flush()
 }

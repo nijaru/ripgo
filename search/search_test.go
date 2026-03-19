@@ -13,7 +13,7 @@ func TestSearchFile(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	s := NewSearcher(Config{}, m)
+	s := NewSearcher(nil, Config{}, m)
 
 	result, err := s.Search("search.go")
 	if err != nil {
@@ -30,7 +30,7 @@ func TestSearchNoMatch(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	s := NewSearcher(Config{}, m)
+	s := NewSearcher(nil, Config{}, m)
 
 	result, err := s.Search("search.go")
 	if err != nil {
@@ -47,7 +47,7 @@ func TestSearchMaxCount(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	s := NewSearcher(Config{MaxCount: 1}, m)
+	s := NewSearcher(nil, Config{MaxCount: 1}, m)
 
 	result, err := s.Search("search.go")
 	if err != nil {
@@ -64,7 +64,7 @@ func TestSearchNonexistentFile(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	s := NewSearcher(Config{}, m)
+	s := NewSearcher(nil, Config{}, m)
 
 	_, err = s.Search("nonexistent_file_xyz.go")
 	if err == nil {
@@ -88,7 +88,7 @@ func TestSearchContextBefore(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	s := NewSearcher(Config{Before: 2}, m)
+	s := NewSearcher(nil, Config{Before: 2}, m)
 
 	path := createTempFile(t, "line1\nline2\nMATCH\nline4\nline5\n")
 	result, err := s.Search(path)
@@ -121,7 +121,7 @@ func TestSearchContextAfter(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	s := NewSearcher(Config{After: 2}, m)
+	s := NewSearcher(nil, Config{After: 2}, m)
 
 	path := createTempFile(t, "line1\nMATCH\nline3\nline4\nline5\n")
 	result, err := s.Search(path)
@@ -150,7 +150,7 @@ func TestSearchContextBoth(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	s := NewSearcher(Config{Before: 1, After: 1}, m)
+	s := NewSearcher(nil, Config{Before: 1, After: 1}, m)
 
 	path := createTempFile(t, "line1\nMATCH\nline3\n")
 	result, err := s.Search(path)
@@ -168,7 +168,7 @@ func TestSearchContextOverlap(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	s := NewSearcher(Config{Before: 2, After: 2}, m)
+	s := NewSearcher(nil, Config{Before: 2, After: 2}, m)
 
 	// Two matches close together: their context overlaps
 	path := createTempFile(t, "a\nX\nc\nd\nX\nf\n")
@@ -202,7 +202,7 @@ func TestSearchContextNoMatch(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	s := NewSearcher(Config{Before: 2, After: 2}, m)
+	s := NewSearcher(nil, Config{Before: 2, After: 2}, m)
 
 	path := createTempFile(t, "a\nb\nc\n")
 	result, err := s.Search(path)
@@ -223,7 +223,7 @@ func TestSearchContextAtStart(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	s := NewSearcher(Config{Before: 3, After: 1}, m)
+	s := NewSearcher(nil, Config{Before: 3, After: 1}, m)
 
 	path := createTempFile(t, "MATCH\nline2\nline3\n")
 	result, err := s.Search(path)
@@ -245,7 +245,7 @@ func TestSearchContextAtEnd(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	s := NewSearcher(Config{Before: 1, After: 3}, m)
+	s := NewSearcher(nil, Config{Before: 1, After: 3}, m)
 
 	path := createTempFile(t, "line1\nline2\nMATCH\n")
 	result, err := s.Search(path)
@@ -270,7 +270,7 @@ func TestSearchContextWithMaxCount(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	s := NewSearcher(Config{Before: 1, After: 1, MaxCount: 1}, m)
+	s := NewSearcher(nil, Config{Before: 1, After: 1, MaxCount: 1}, m)
 
 	path := createTempFile(t, "a\nX\nc\nd\nX\nf\n")
 	result, err := s.Search(path)
@@ -288,10 +288,96 @@ func TestSearchContextWithMaxCount(t *testing.T) {
 	}
 }
 
+func TestSearchBinary(t *testing.T) {
+	m, _ := pattern.New(pattern.Config{Pattern: "hello"})
+	
+	// Create binary file
+	dir := t.TempDir()
+	binPath := filepath.Join(dir, "data.bin")
+	if err := os.WriteFile(binPath, []byte("hello\x00world"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Run("skip_by_default", func(t *testing.T) {
+		s := NewSearcher(nil, Config{}, m)
+		res, err := s.Search(binPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !res.Binary {
+			t.Error("expected Binary=true")
+		}
+		if len(res.Matches) > 0 {
+			t.Error("expected 0 matches for binary file by default")
+		}
+	})
+
+	t.Run("search_binary", func(t *testing.T) {
+		s := NewSearcher(nil, Config{SearchBinary: true}, m)
+		res, err := s.Search(binPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !res.Binary {
+			t.Error("expected Binary=true")
+		}
+		if len(res.Matches) == 0 {
+			t.Error("expected matches in binary file when SearchBinary=true")
+		}
+	})
+
+	t.Run("only_binary", func(t *testing.T) {
+		s := NewSearcher(nil, Config{OnlyBinary: true}, m)
+		
+		// Binary file should have matches
+		res, _ := s.Search(binPath)
+		if len(res.Matches) == 0 {
+			t.Error("expected matches in binary file")
+		}
+
+		// Text file should be skipped
+		txtPath := createTempFile(t, "hello world")
+		res2, _ := s.Search(txtPath)
+		if len(res2.Matches) > 0 {
+			t.Error("expected 0 matches for text file when OnlyBinary=true")
+		}
+	})
+}
+
+func TestSearchMmap(t *testing.T) {
+	// Create a large file (>1MB) to trigger mmap
+	dir := t.TempDir()
+	path := filepath.Join(dir, "large.txt")
+	f, err := os.Create(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	content := "some text\nMATCH\nmore text\n"
+	// Pad to > 1MB
+	padding := make([]byte, 1024*1024+100)
+	for i := range padding {
+		padding[i] = 'a'
+	}
+	f.Write([]byte(content))
+	f.Write(padding)
+	f.Close()
+
+	m, _ := pattern.New(pattern.Config{Pattern: "MATCH"})
+	s := NewSearcher(nil, Config{}, m)
+	res, err := s.Search(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(res.Matches) != 1 {
+		t.Errorf("expected 1 match, got %d", len(res.Matches))
+	}
+}
+
 func BenchmarkSearch(b *testing.B) {
 	// Search the real search.go file for "func" — representative workload
 	m, _ := pattern.New(pattern.Config{Pattern: "func"})
-	s := NewSearcher(Config{}, m)
+	s := NewSearcher(nil, Config{}, m)
 
 	b.Run("literal", func(b *testing.B) {
 		for b.Loop() {
@@ -300,7 +386,7 @@ func BenchmarkSearch(b *testing.B) {
 	})
 
 	b.Run("with_context", func(b *testing.B) {
-		sCtx := NewSearcher(Config{Before: 2, After: 2}, m)
+		sCtx := NewSearcher(nil, Config{Before: 2, After: 2}, m)
 		for b.Loop() {
 			sCtx.Search("search.go")
 		}
@@ -309,7 +395,7 @@ func BenchmarkSearch(b *testing.B) {
 
 func BenchmarkSearchRegex(b *testing.B) {
 	m, _ := pattern.New(pattern.Config{Pattern: `func\s+\w+`})
-	s := NewSearcher(Config{}, m)
+	s := NewSearcher(nil, Config{}, m)
 
 	b.Run("regex", func(b *testing.B) {
 		for b.Loop() {

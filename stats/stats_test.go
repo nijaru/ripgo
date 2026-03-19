@@ -16,11 +16,8 @@ func TestRecordMatch(t *testing.T) {
 	if st.TotalMatches() != 1 {
 		t.Errorf("TotalMatches = %d, want 1", st.TotalMatches())
 	}
-	if st.FilesMatched() != 1 {
-		t.Errorf("FilesMatched = %d, want 1", st.FilesMatched())
-	}
-	if st.FilesSearched() != 1 {
-		t.Errorf("FilesSearched = %d, want 1", st.FilesSearched())
+	if st.TotalFiles() != 1 {
+		t.Errorf("TotalFiles = %d, want 1", st.TotalFiles())
 	}
 }
 
@@ -31,11 +28,8 @@ func TestRecordNoMatch(t *testing.T) {
 	if st.TotalMatches() != 0 {
 		t.Errorf("TotalMatches = %d, want 0", st.TotalMatches())
 	}
-	if st.FilesMatched() != 0 {
-		t.Errorf("FilesMatched = %d, want 0", st.FilesMatched())
-	}
-	if st.FilesSearched() != 1 {
-		t.Errorf("FilesSearched = %d, want 1", st.FilesSearched())
+	if st.TotalFiles() != 0 {
+		t.Errorf("TotalFiles = %d, want 0", st.TotalFiles())
 	}
 }
 

@@ -21,19 +21,49 @@ type Config struct {
 	GlobIncludes []string
 	// GlobExcludes is the list of glob patterns to always exclude.
 	GlobExcludes []string
+	// Types is the list of file types to include (e.g., "go").
+	Types []string
+	// TypesNot is the list of file types to exclude.
+	TypesNot []string
 	// NoIgnore disables .gitignore/.ignore file loading.
 	NoIgnore bool
 	// Hidden includes hidden files and directories.
 	Hidden bool
 }
 
+// FileTypes maps type names to glob patterns.
+var FileTypes = map[string][]string{
+	"go":     {"*.go"},
+	"rust":   {"*.rs"},
+	"python": {"*.py"},
+	"js":     {"*.js", "*.jsx"},
+	"ts":     {"*.ts", "*.tsx"},
+	"c":      {"*.c", "*.h"},
+	"cpp":    {"*.cpp", "*.hpp", "*.cc", "*.hh"},
+	"java":   {"*.java"},
+	"html":   {"*.html", "*.htm"},
+	"css":    {"*.css"},
+	"md":     {"*.md", "*.markdown"},
+	"json":   {"*.json"},
+	"yaml":   {"*.yaml", "*.yml"},
+	"toml":   {"*.toml"},
+	"sh":     {"*.sh", "*.bash"},
+	"make":   {"Makefile", "*.mk"},
+	"docker": {"Dockerfile", "*.dockerfile"},
+}
+
 // IgnoreRule is a single parsed gitignore rule.
 type IgnoreRule struct {
-	Pattern       string
-	Negated       bool
+	// Pattern is the glob pattern to match.
+	Pattern string
+	// Negated is true if the pattern starts with !.
+	Negated bool
+	// DirectoryOnly is true if the pattern ends with /.
 	DirectoryOnly bool
-	Anchored      bool
-	Source        string // source file path
+	// Anchored is true if the pattern starts with /.
+	Anchored bool
+	// Source is the path to the file that defined this rule.
+	Source string
 }
 
 // Match reports whether relPath matches this rule's pattern.
@@ -93,62 +123,45 @@ func matchGlob(pattern, path string) bool {
 // matchGlobStar handles patterns containing **.
 // ** matches zero or more path components (including /).
 func matchGlobStar(pattern, path string) bool {
-	// Split on ** without pre-allocating: extract segments lazily.
-	// Pattern "a/**/b" has before="", after="b" between ** markers.
-	pathParts := strings.Split(path, "/")
-	return matchGlobStarPartsOpt(pattern, pathParts, 0)
+	// Recursive matcher using indices to avoid allocations
+	return matchGlobStarAt(pattern, path, 0, 0)
 }
 
-// matchGlobStarPartsOpt matches a glob pattern containing ** against path segments.
-// It extracts pattern segments between ** markers on demand instead of pre-splitting.
-func matchGlobStarPartsOpt(pattern string, pathParts []string, si int) bool {
-	if pattern == "" {
-		return si == len(pathParts)
+func matchGlobStarAt(pattern, path string, pi, si int) bool {
+	if pi == len(pattern) {
+		return si == len(path)
 	}
 
 	// Find the next ** marker
-	starIdx := strings.Index(pattern, "**")
+	starIdx := strings.Index(pattern[pi:], "**")
 	if starIdx < 0 {
-		// No more ** — remaining pattern must match remaining path as a single unit
-		remaining := strings.Join(pathParts[si:], "/")
-		ok, _ := filepath.Match(pattern, remaining)
+		// No more ** — remaining pattern must match remaining path
+		ok, _ := filepath.Match(pattern[pi:], path[si:])
 		return ok
 	}
+	starIdx += pi
 
-	// Extract the segment before ** (what must match before the wildcard)
-	before := pattern[:starIdx]
-	// Remainder after ** (strip leading slash if present)
+	// Segment before **
+	before := pattern[pi:starIdx]
+	// Remainder after ** (strip leading slash)
 	after := pattern[starIdx+2:]
 	if len(after) > 0 && after[0] == '/' {
 		after = after[1:]
 	}
 
 	if before == "" {
-		// Pattern starts with ** — try matching zero or more components
+		// Pattern starts with ** (e.g., "**/*.log")
 		if after == "" {
 			return true // trailing ** matches everything
 		}
-		// Try consuming 0, 1, 2, ... path components
-		for i := si; i <= len(pathParts); i++ {
-			if matchGlobStarPartsOpt(after, pathParts, i) {
-				return true
-			}
-		}
-		return false
-	}
 
-	// 'before' must match starting from si.
-	// If before contains a slash, join path components and match.
-	// Otherwise, match a single path component.
-	if strings.Contains(before, "/") {
-		for end := si + 1; end <= len(pathParts); end++ {
-			candidate := strings.Join(pathParts[si:end], "/")
-			ok, _ := filepath.Match(before, candidate)
-			if ok {
-				if after == "" {
-					return end == len(pathParts)
-				}
-				if matchGlobStarPartsOpt(after, pathParts, end) {
+		// Try matching 'after' at every possible path segment boundary
+		if matchGlobStarAt(after, path, 0, si) {
+			return true
+		}
+		for i := si; i < len(path); i++ {
+			if path[i] == '/' {
+				if matchGlobStarAt(after, path, 0, i+1) {
 					return true
 				}
 			}
@@ -156,28 +169,74 @@ func matchGlobStarPartsOpt(pattern string, pathParts []string, si int) bool {
 		return false
 	}
 
-	// Single-segment: before must match exactly one path component
-	if si >= len(pathParts) {
-		return false
+	// 'before' must match a prefix of the current path segment(s)
+	if strings.ContainsRune(before, '/') {
+		// before has a slash, it must match one or more segments exactly
+		// count slashes in before to know how many segments to take from path
+		slashes := strings.Count(before, "/")
+		curr := si
+		for range slashes {
+			idx := strings.IndexByte(path[curr:], '/')
+			if idx < 0 {
+				return false
+			}
+			curr += idx + 1
+		}
+		// now find the end of this segment
+		end := strings.IndexByte(path[curr:], '/')
+		if end < 0 {
+			end = len(path)
+		} else {
+			end += curr
+		}
+
+		ok, _ := filepath.Match(before, path[si:end])
+		if !ok {
+			return false
+		}
+		if after == "" {
+			return end == len(path)
+		}
+		// after is handled at next segment
+		nextSi := end
+		if nextSi < len(path) && path[nextSi] == '/' {
+			nextSi++
+		}
+		return matchGlobStarAt(after, path, 0, nextSi)
 	}
-	ok, _ := filepath.Match(before, pathParts[si])
+
+	// Single segment 'before'
+	end := strings.IndexByte(path[si:], '/')
+	if end < 0 {
+		end = len(path)
+	} else {
+		end += si
+	}
+
+	ok, _ := filepath.Match(before, path[si:end])
 	if !ok {
 		return false
 	}
 
 	if after == "" {
-		return si+1 == len(pathParts)
+		return end == len(path)
 	}
-
-	return matchGlobStarPartsOpt(after, pathParts, si+1)
+	nextSi := end
+	if nextSi < len(path) && path[nextSi] == '/' {
+		nextSi++
+	}
+	return matchGlobStarAt(after, path, 0, nextSi)
 }
 
 // IgnoreSet holds all ignore rules for one ignore file (.gitignore/.ignore).
 // Rules are ordered top-to-bottom; the last match wins.
 type IgnoreSet struct {
-	Dir    string // directory this ignore file lives in
-	Rules  []IgnoreRule
-	Parent *IgnoreSet // parent directory's ignore set (nil at root)
+	// Dir is the directory this ignore file lives in.
+	Dir string
+	// Rules is the list of parsed rules from the ignore file.
+	Rules []IgnoreRule
+	// Parent is the parent directory's ignore set.
+	Parent *IgnoreSet
 }
 
 // IsIgnored checks relPath against this set and all ancestors.
@@ -187,21 +246,21 @@ type IgnoreSet struct {
 // Across the chain, the first set with a matching rule determines the result
 // (child set takes precedence over parent).
 func (s *IgnoreSet) IsIgnored(relPath string, isDir bool) bool {
-	// Step 1: check if any ancestor directory is ignored by parent rules.
-	if s.Parent != nil {
-		for i := 0; i < len(relPath); i++ {
-			if relPath[i] == '/' {
-				if s.Parent.isIgnoredBySelf(relPath[:i], true) {
-					return true
-				}
-			}
-		}
-	}
-
-	// Step 2: walk chain child → parent. First set with a matching rule wins.
+	// Step 1: walk chain child → parent. First set with a matching rule wins.
+	currentRel := relPath
 	for cur := s; cur != nil; cur = cur.Parent {
-		if ignored, ok := cur.matchRules(relPath, isDir); ok {
+		if ignored, ok := cur.matchRules(currentRel, isDir); ok {
 			return ignored
+		}
+		// If we have a parent, we must prepend our directory name to the relative path
+		// for the parent's rules to match correctly.
+		if cur.Parent != nil {
+			dirName := filepath.Base(cur.Dir)
+			if currentRel == "" || currentRel == "." {
+				currentRel = dirName
+			} else {
+				currentRel = dirName + "/" + currentRel
+			}
 		}
 	}
 	return false
@@ -232,14 +291,15 @@ func (s *IgnoreSet) matchRules(relPath string, isDir bool) (ignored bool, matche
 
 // Engine manages ignore rules and glob filters for file traversal.
 type Engine struct {
-	cfg          Config
-	includes     []glob.Glob
-	excludes     []glob.Glob
-	sets         map[string]*IgnoreSet
-	mu           sync.Mutex
-	baseRelSlash string // path from cwd, forward-slash form (cached for ShouldIgnore)
+        cfg          Config
+        includes     []glob.Glob
+        excludes     []glob.Glob
+        typeIncludes []glob.Glob
+        typeExcludes []glob.Glob
+        sets         map[string]*IgnoreSet
+        mu           sync.RWMutex
+        baseRelSlash string // path from cwd, forward-slash form (cached for ShouldIgnore)
 }
-
 // NewEngine creates an ignore engine from the given config.
 func NewEngine(cfg Config) (*Engine, error) {
 	engine := &Engine{
@@ -251,13 +311,7 @@ func NewEngine(cfg Config) (*Engine, error) {
 
 	// Pre-compute the cwd-relative path to avoid per-file filepath.Rel calls.
 	if cwd, err := os.Getwd(); err == nil {
-		rel, err := filepath.Rel(".", cwd)
-		if err == nil {
-			engine.baseRelSlash = filepath.ToSlash(rel)
-		}
-	}
-	if engine.baseRelSlash == "." {
-		engine.baseRelSlash = ""
+		engine.baseRelSlash = filepath.ToSlash(cwd)
 	}
 
 	for _, p := range cfg.GlobIncludes {
@@ -274,6 +328,35 @@ func NewEngine(cfg Config) (*Engine, error) {
 			return nil, fmt.Errorf("compile exclude glob %q: %w", p, err)
 		}
 		engine.excludes = append(engine.excludes, g)
+	}
+
+	// Compile type filters
+	for _, t := range cfg.Types {
+		patterns, ok := FileTypes[t]
+		if !ok {
+			return nil, fmt.Errorf("unknown file type %q", t)
+		}
+		for _, p := range patterns {
+			g, err := glob.Compile(p)
+			if err != nil {
+				return nil, fmt.Errorf("compile type glob %q: %w", p, err)
+			}
+			engine.typeIncludes = append(engine.typeIncludes, g)
+		}
+	}
+
+	for _, t := range cfg.TypesNot {
+		patterns, ok := FileTypes[t]
+		if !ok {
+			return nil, fmt.Errorf("unknown file type %q", t)
+		}
+		for _, p := range patterns {
+			g, err := glob.Compile(p)
+			if err != nil {
+				return nil, fmt.Errorf("compile type glob %q: %w", p, err)
+			}
+			engine.typeExcludes = append(engine.typeExcludes, g)
+		}
 	}
 
 	return engine, nil
@@ -332,64 +415,76 @@ func parseIgnoreLines(content, source string) []IgnoreRule {
 // LoadIgnoreFile reads .gitignore and .ignore files from the given directory.
 // It links the resulting IgnoreSet to the parent directory's chain.
 func (e *Engine) LoadIgnoreFile(dir string) error {
-	if e.cfg.NoIgnore {
-		return nil
-	}
+        if e.cfg.NoIgnore {
+                return nil
+        }
 
-	dir = filepath.Clean(dir)
+        dir = filepath.ToSlash(filepath.Clean(dir))
 
-	e.mu.Lock()
-	defer e.mu.Unlock()
+        e.mu.RLock()
+        _, loaded := e.sets[dir]
+        e.mu.RUnlock()
+        if loaded {
+                return nil
+        }
 
-	if _, ok := e.sets[dir]; ok {
-		return nil
-	}
+        var rules []IgnoreRule
+        for _, name := range []string{".gitignore", ".ignore"} {
+                data, err := os.ReadFile(filepath.Join(dir, name))
+                if err != nil {
+                        continue
+                }
+                source := filepath.Join(dir, name)
+                rules = append(rules, parseIgnoreLines(string(data), source)...)
+        }
 
-	var rules []IgnoreRule
-	for _, name := range []string{".gitignore", ".ignore"} {
-		data, err := os.ReadFile(filepath.Join(dir, name))
-		if err != nil {
-			continue
-		}
-		source := filepath.Join(dir, name)
-		rules = append(rules, parseIgnoreLines(string(data), source)...)
-	}
+        e.mu.Lock()
+        defer e.mu.Unlock()
 
-	set := &IgnoreSet{
-		Dir:   dir,
-		Rules: rules,
-	}
+        // Re-check after acquiring write lock
+        if _, ok := e.sets[dir]; ok {
+                return nil
+        }
 
-	// Link to parent chain
-	if parentDir := filepath.Dir(dir); parentDir != dir {
-		if parentSet, ok := e.sets[parentDir]; ok {
-			set.Parent = parentSet
-		}
-	}
+        set := &IgnoreSet{
+                Dir:   dir,
+                Rules: rules,
+        }
 
-	e.sets[dir] = set
-	return nil
+        // Link to parent chain
+        if parentDir := filepath.Dir(dir); parentDir != dir {
+                if parentSet, ok := e.sets[parentDir]; ok {
+                        set.Parent = parentSet
+                }
+        }
+
+        e.sets[dir] = set
+        return nil
 }
-
 // ShouldIgnore returns true if the path should be excluded from traversal.
+// path MUST be cleaned and use forward slashes (normalized by Walker).
 func (e *Engine) ShouldIgnore(path string, isDir bool) bool {
-	clean := filepath.Clean(path)
-	relSlash := filepath.ToSlash(clean)
-	if e.baseRelSlash != "" {
-		relSlash = relSlash[len(e.baseRelSlash)+1:]
+	// 1. Calculate path relative to cwd for glob matching
+	relSlash := path
+	if e.baseRelSlash != "" && strings.HasPrefix(path, e.baseRelSlash) {
+		if len(path) > len(e.baseRelSlash) {
+			relSlash = path[len(e.baseRelSlash)+1:]
+		} else {
+			relSlash = ""
+		}
 	}
 
-	// CLI globs always take precedence
-	for _, g := range e.excludes {
-		if g.Match(relSlash) {
+	// 2. CLI globs always take precedence
+	for i := range e.excludes {
+		if e.excludes[i].Match(relSlash) {
 			return true
 		}
 	}
 
 	if len(e.includes) > 0 {
 		matched := false
-		for _, g := range e.includes {
-			if g.Match(relSlash) {
+		for i := range e.includes {
+			if e.includes[i].Match(relSlash) {
 				matched = true
 				break
 			}
@@ -399,7 +494,28 @@ func (e *Engine) ShouldIgnore(path string, isDir bool) bool {
 		}
 	}
 
-	// Hidden file check — scan for path components starting with '.'
+	// 3. Type filters (files only)
+	if !isDir {
+		for i := range e.typeExcludes {
+			if e.typeExcludes[i].Match(relSlash) {
+				return true
+			}
+		}
+		if len(e.typeIncludes) > 0 {
+			matched := false
+			for i := range e.typeIncludes {
+				if e.typeIncludes[i].Match(relSlash) {
+					matched = true
+					break
+				}
+			}
+			if !matched {
+				return true
+			}
+		}
+	}
+
+	// 4. Hidden file check
 	if !e.cfg.Hidden {
 		for i := 0; i < len(relSlash); i++ {
 			if relSlash[i] == '.' && (i == 0 || relSlash[i-1] == '/') {
@@ -408,51 +524,53 @@ func (e *Engine) ShouldIgnore(path string, isDir bool) bool {
 		}
 	}
 
-	// Check ignore file rules via chain
-	dir := filepath.Dir(clean)
-
-	e.mu.Lock()
-	set, ok := e.sets[dir]
-	e.mu.Unlock()
-
-	if !ok {
+	// 5. Check ignore file rules via chain.
+	// Find the deepest ignore set that is a prefix of our path.
+	e.mu.RLock()
+	var bestSet *IgnoreSet
+	for dir, set := range e.sets {
+	        if dir == "." || dir == path || (strings.HasPrefix(path, dir) && path[len(dir)] == '/') {
+	                if bestSet == nil || len(dir) > len(bestSet.Dir) {
+	                        bestSet = set
+	                }
+	        }
+	}
+	e.mu.RUnlock()
+	if bestSet == nil {
 		return false
 	}
 
-	// If the directory itself is ignored by parent rules, everything inside is ignored
-	if set.Parent != nil {
-		dirRelSlash := relSlash
-		if idx := strings.LastIndexByte(relSlash, '/'); idx >= 0 {
-			dirRelSlash = relSlash[:idx]
-		}
-		if set.Parent.isIgnoredBySelf(dirRelSlash, true) {
-			return true
+	// 6. Correct gitignore behavior: if any ancestor directory is ignored,
+	// then the file is ignored unconditionally (cannot be re-included by child).
+	for cur := bestSet; cur != nil; cur = cur.Parent {
+		if cur.Parent != nil {
+			dirName := filepath.Base(cur.Dir)
+			if cur.Parent.IsIgnored(dirName, true) {
+				return true
+			}
 		}
 	}
 
-	// Compute path relative to this ignore set's directory
-	var setRelSlash string
-	if set.Dir == "." || set.Dir == clean {
-		setRelSlash = relSlash
-	} else if len(clean) > len(set.Dir)+1 && clean[len(set.Dir)] == '/' && clean[:len(set.Dir)] == set.Dir {
-		setRelSlash = clean[len(set.Dir)+1:]
-	} else {
-		setRel, err := filepath.Rel(set.Dir, clean)
-		if err != nil {
-			return false
+	// 7. Check rules for the file itself.
+	relToSet := relSlash
+	if bestSet.Dir != "." && strings.HasPrefix(path, bestSet.Dir) {
+		if len(path) > len(bestSet.Dir) {
+			relToSet = path[len(bestSet.Dir)+1:]
+		} else {
+			relToSet = ""
 		}
-		setRelSlash = filepath.ToSlash(setRel)
 	}
 
-	return set.IsIgnored(setRelSlash, isDir)
+	return bestSet.IsIgnored(relToSet, isDir)
 }
 
 // GetIgnoreRules returns the loaded ignore rules for a directory.
 func (e *Engine) GetIgnoreRules(dir string) []IgnoreRule {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	if set, ok := e.sets[filepath.Clean(dir)]; ok {
-		return set.Rules
-	}
-	return nil
+        dir = filepath.ToSlash(filepath.Clean(dir))
+        e.mu.RLock()
+        defer e.mu.RUnlock()
+        if set, ok := e.sets[dir]; ok {
+                return set.Rules
+        }
+        return nil
 }

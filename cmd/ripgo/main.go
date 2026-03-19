@@ -1,12 +1,12 @@
 package main
 
 import (
-	"context"
-	"io"
-	"os"
-	"os/signal"
-	"sync"
-
+        "context"
+        "io"
+        "os"
+        "os/signal"
+        "strings"
+        "sync"
 	"github.com/alecthomas/kong"
 
 	"github.com/nijaru/ripgo/ignore"
@@ -25,11 +25,19 @@ func run(ctx context.Context) int {
 
 	cfg, err := config.New(opts)
 	if err != nil {
-		os.Stderr.WriteString("Error: " + err.Error() + "\n")
-		return 1
+	        os.Stderr.WriteString("Error: " + err.Error() + "\n")
+	        return 1
+	}
+
+	if cfg.TypeList {
+	        for t, patterns := range ignore.FileTypes {
+	                os.Stdout.WriteString(t + ": " + strings.Join(patterns, ", ") + "\n")
+	        }
+	        return 0
 	}
 
 	matcher, err := pattern.New(cfg.Pattern)
+
 	if err != nil {
 		os.Stderr.WriteString("Error: " + err.Error() + "\n")
 		return 1
@@ -41,8 +49,9 @@ func run(ctx context.Context) int {
 		return 1
 	}
 
-	w := walk.NewWalker(cfg.Walk, ignoreEngine)
-	searcher := search.NewSearcher(cfg.Search, matcher)
+	w := walk.NewWalker(nil, cfg.Walk, ignoreEngine)
+	searcher := search.NewSearcher(nil, cfg.Search, matcher)
+
 	prn := newPrinter(cfg)
 	var st stats.Stats
 
@@ -64,18 +73,27 @@ func run(ctx context.Context) int {
 		go func() {
 			defer scanWg.Done()
 			for path := range fileCh {
-				result, err := searcher.Search(path)
-				if err != nil {
-					continue
-				}
-				if len(result.Matches) > 0 {
-					select {
-					case <-ctx.Done():
-						return
-					case resultCh <- result:
-					}
-				}
+			        result, err := searcher.Search(path)
+			        if err != nil {
+			                continue
+			        }
+			        // Send if it has matches, or context entries,
+			        // or if it's binary and we're looking for/reporting binary.
+			        hasMatches := len(result.Matches) > 0 || len(result.Entries) > 0
+			        shouldSend := hasMatches
+			        if result.Binary && (cfg.Search.SearchBinary || cfg.Search.OnlyBinary) {
+			                shouldSend = true
+			        }
+
+			        if shouldSend {
+			                select {
+			                case <-ctx.Done():
+			                        return
+			                case resultCh <- result:
+			                }
+			        }
 			}
+
 		}()
 	}
 
@@ -100,11 +118,12 @@ func run(ctx context.Context) int {
 }
 
 func newPrinter(cfg *config.Config) printer.Printer {
-	switch cfg.OutputMode() {
-	case config.OutputJSON:
-		return printer.NewJSONPrinter()
-	case config.OutputCount:
-		return printer.NewCountPrinter(os.Stdout)
+        switch cfg.OutputMode() {
+        case config.OutputJSON:
+                return printer.NewJSONPrinter(os.Stdout)
+        case config.OutputCount:
+                return printer.NewCountPrinter(os.Stdout)
+
 	case config.OutputFiles:
 		return printer.NewFilesPrinter(os.Stdout)
 	case config.OutputQuiet:

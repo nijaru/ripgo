@@ -1,28 +1,33 @@
+// Package stats provides search statistics tracking.
 package stats
 
-import "github.com/nijaru/ripgo/search"
+import (
+	"sync/atomic"
 
-// Stats tracks match counts across all files.
+	"github.com/nijaru/ripgo/search"
+)
+
+// Stats tracks match and file counts across a search session.
+// It is safe for concurrent use.
 type Stats struct {
-	filesMatched  int
-	totalMatches  int
-	filesSearched int
+	files   atomic.Int64
+	matches atomic.Int64
 }
 
-// RecordMatch records the result of searching a single file.
+// RecordMatch updates statistics with the results from a single file.
 func (s *Stats) RecordMatch(r search.Result) {
-	s.filesSearched++
 	if len(r.Matches) > 0 {
-		s.filesMatched++
-		s.totalMatches += len(r.Matches)
+		s.files.Add(1)
+		s.matches.Add(int64(len(r.Matches)))
 	}
 }
 
-// TotalMatches returns the total number of matches found.
-func (s *Stats) TotalMatches() int { return s.totalMatches }
+// TotalFiles returns the number of files with at least one match.
+func (s *Stats) TotalFiles() int64 {
+	return s.files.Load()
+}
 
-// FilesMatched returns the number of files with at least one match.
-func (s *Stats) FilesMatched() int { return s.filesMatched }
-
-// FilesSearched returns the total number of files searched.
-func (s *Stats) FilesSearched() int { return s.filesSearched }
+// TotalMatches returns the total number of matches found across all files.
+func (s *Stats) TotalMatches() int64 {
+	return s.matches.Load()
+}

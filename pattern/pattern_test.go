@@ -112,15 +112,42 @@ func TestSmartCase(t *testing.T) {
 	if lm.CaseFold() {
 		t.Error("expected case-sensitive for pattern with uppercase")
 	}
+
+	// regex lowercase → case-insensitive
+	m, err = New(Config{Pattern: `[a-z]+`, SmartCase: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rm, ok := m.(*RegexMatcher)
+	if !ok {
+		t.Fatalf("expected regex matcher, got %T", m)
+	}
+	// Verify behavior via matching
+	if !rm.re.Match([]byte("ABC")) {
+		t.Error("expected case-insensitive regex match for lowercase pattern")
+	}
+
+	// regex with uppercase → case-sensitive
+	m, err = New(Config{Pattern: `[A-Z]+`, SmartCase: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rm, ok = m.(*RegexMatcher)
+	if !ok {
+		t.Fatal("expected regex matcher")
+	}
+	if rm.re.Match([]byte("abc")) {
+		t.Error("expected case-sensitive regex match for uppercase pattern")
+	}
 }
 
 func BenchmarkPattern(b *testing.B) {
-	lines := []string{
-		"func main() {",
-		"	fmt.Println(\"hello world\")",
-		"}",
-		"// TODO: refactor this",
-		"var x = 42",
+	lines := [][]byte{
+		[]byte("func main() {"),
+		[]byte("	fmt.Println(\"hello world\")"),
+		[]byte("}"),
+		[]byte("// TODO: refactor this"),
+		[]byte("var x = 42"),
 	}
 
 	b.Run("literal_compile", func(b *testing.B) {
@@ -133,7 +160,7 @@ func BenchmarkPattern(b *testing.B) {
 	b.Run("literal_match", func(b *testing.B) {
 		for b.Loop() {
 			for _, line := range lines {
-				m.Match([]byte(line))
+				m.Match(line)
 			}
 		}
 	})
@@ -148,7 +175,16 @@ func BenchmarkPattern(b *testing.B) {
 	b.Run("regex_match", func(b *testing.B) {
 		for b.Loop() {
 			for _, line := range lines {
-				re.Match([]byte(line))
+				re.Match(line)
+			}
+		}
+	})
+
+	mci, _ := New(Config{Pattern: "fmt", IgnoreCase: true})
+	b.Run("literal_match_ci", func(b *testing.B) {
+		for b.Loop() {
+			for _, line := range lines {
+				mci.Match(line)
 			}
 		}
 	})

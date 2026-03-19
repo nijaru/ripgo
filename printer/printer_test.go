@@ -271,7 +271,8 @@ func TestFilesPrinterNoMatches(t *testing.T) {
 // --- JSONPrinter ---
 
 func TestJSONPrinter(t *testing.T) {
-	p := NewJSONPrinter()
+	var buf bytes.Buffer
+	p := NewJSONPrinter(&buf)
 
 	r1 := search.Result{
 		Path: "a.go",
@@ -292,20 +293,23 @@ func TestJSONPrinter(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Finish writes to os.Stdout, can't easily capture.
-	// Test that results are accumulated by verifying Finish doesn't error.
 	if err := p.Finish(stats.Stats{}); err != nil {
 		t.Fatal(err)
 	}
 
-	// Verify internal state via PrintResult + Finish not crashing
-	if len(p.results) != 2 {
-		t.Errorf("expected 2 results, got %d", len(p.results))
+	// Verify JSON output
+	var out []search.Result
+	if err := json.Unmarshal(buf.Bytes(), &out); err != nil {
+		t.Fatalf("failed to unmarshal JSON output: %v", err)
+	}
+	if len(out) != 2 || out[0].Path != "a.go" || out[1].Path != "b.go" {
+		t.Errorf("unexpected unmarshaled results: %+v", out)
 	}
 }
 
 func TestJSONPrinterResultContent(t *testing.T) {
-	p := NewJSONPrinter()
+	var buf bytes.Buffer
+	p := NewJSONPrinter(&buf)
 
 	r := search.Result{
 		Path: "test.go",
@@ -317,14 +321,12 @@ func TestJSONPrinterResultContent(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Marshal ourselves to verify structure
-	data, err := json.Marshal(p.results)
-	if err != nil {
+	if err := p.Finish(stats.Stats{}); err != nil {
 		t.Fatal(err)
 	}
 
 	var out []search.Result
-	if err := json.Unmarshal(data, &out); err != nil {
+	if err := json.Unmarshal(buf.Bytes(), &out); err != nil {
 		t.Fatal(err)
 	}
 	if len(out) != 1 || out[0].Path != "test.go" {
@@ -333,12 +335,14 @@ func TestJSONPrinterResultContent(t *testing.T) {
 }
 
 func TestJSONPrinterEmpty(t *testing.T) {
-	p := NewJSONPrinter()
+	var buf bytes.Buffer
+	p := NewJSONPrinter(&buf)
 
 	if err := p.Finish(stats.Stats{}); err != nil {
 		t.Fatal(err)
 	}
-	if len(p.results) != 0 {
-		t.Errorf("expected 0 results, got %d", len(p.results))
+	got := buf.String()
+	if got != "[]" {
+		t.Errorf("expected empty array [], got %q", got)
 	}
 }
