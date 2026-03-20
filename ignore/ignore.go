@@ -234,6 +234,8 @@ func matchGlobStarAt(pattern, path string, pi, si int) bool {
 type IgnoreSet struct {
 	// Dir is the directory this ignore file lives in.
 	Dir string
+	// DirBase is the base name of the directory (cached for performance).
+	DirBase string
 	// Rules is the list of parsed rules from the ignore file.
 	Rules []IgnoreRule
 	// Parent is the parent directory's ignore set.
@@ -256,11 +258,10 @@ func (s *IgnoreSet) IsIgnored(relPath string, isDir bool) bool {
 		// If we have a parent, we must prepend our directory name to the relative path
 		// for the parent's rules to match correctly.
 		if cur.Parent != nil {
-			dirName := filepath.Base(cur.Dir)
 			if currentRel == "" || currentRel == "." {
-				currentRel = dirName
+				currentRel = cur.DirBase
 			} else {
-				currentRel = dirName + "/" + currentRel
+				currentRel = cur.DirBase + "/" + currentRel
 			}
 		}
 	}
@@ -292,12 +293,12 @@ func (s *IgnoreSet) matchRules(relPath string, isDir bool) (ignored bool, matche
 
 // Node is a trie node for directory-based ignore set lookups.
 type Node struct {
-	Children map[string]*Node
+	Children sync.Map // map[string]*Node
 	Set      *IgnoreSet
 }
 
 func newNode() *Node {
-	return &Node{Children: make(map[string]*Node)}
+	return &Node{}
 }
 
 // Engine manages ignore rules and glob filters for file traversal.
@@ -448,9 +449,7 @@ func (e *Engine) LoadIgnoreFile(dir string) (IgnoreContext, error) {
 
 	dir = filepath.ToSlash(filepath.Clean(dir))
 
-	e.mu.RLock()
 	existing := e.lookup(dir)
-	e.mu.RUnlock()
 	if existing != nil && existing.Dir == dir {
 		return IgnoreContext{set: existing}, nil
 	}
@@ -474,14 +473,10 @@ func (e *Engine) LoadIgnoreFile(dir string) (IgnoreContext, error) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
-	// Re-check after acquiring write lock
-	if existing := e.lookup(dir); existing != nil && existing.Dir == dir {
-		return IgnoreContext{set: existing}, nil
-	}
-
 	set := &IgnoreSet{
-		Dir:   dir,
-		Rules: rules,
+		Dir:     dir,
+		DirBase: filepath.Base(dir),
+		Rules:   rules,
 	}
 
 	// Link to parent chain
@@ -503,10 +498,8 @@ func (e *Engine) insert(path string, set *IgnoreSet) {
 	parts := strings.Split(path, "/")
 	node := e.root
 	for _, part := range parts {
-		if node.Children[part] == nil {
-			node.Children[part] = newNode()
-		}
-		node = node.Children[part]
+		next, _ := node.Children.LoadOrStore(part, newNode())
+		node = next.(*Node)
 	}
 	node.Set = set
 }
@@ -524,11 +517,11 @@ func (e *Engine) lookup(path string) *IgnoreSet {
 	}
 
 	for _, part := range parts {
-		next, ok := node.Children[part]
+		val, ok := node.Children.Load(part)
 		if !ok {
 			break
 		}
-		node = next
+		node = val.(*Node)
 		if node.Set != nil {
 			bestSet = node.Set
 		}
@@ -605,9 +598,7 @@ func (e *Engine) ShouldIgnore(path string, isDir bool, ctx ...IgnoreContext) boo
 	if len(ctx) > 0 && ctx[0].set != nil {
 		bestSet = ctx[0].set
 	} else {
-		e.mu.RLock()
 		bestSet = e.lookup(path)
-		e.mu.RUnlock()
 	}
 
 	if bestSet == nil {
@@ -618,8 +609,7 @@ func (e *Engine) ShouldIgnore(path string, isDir bool, ctx ...IgnoreContext) boo
 	// then the file is ignored unconditionally (cannot be re-included by child).
 	for cur := bestSet; cur != nil; cur = cur.Parent {
 		if cur.Parent != nil {
-			dirName := filepath.Base(cur.Dir)
-			if cur.Parent.IsIgnored(dirName, true) {
+			if cur.Parent.IsIgnored(cur.DirBase, true) {
 				return true
 			}
 		}
@@ -641,8 +631,6 @@ func (e *Engine) ShouldIgnore(path string, isDir bool, ctx ...IgnoreContext) boo
 // GetIgnoreRules returns the loaded ignore rules for a directory.
 func (e *Engine) GetIgnoreRules(dir string) []IgnoreRule {
 	dir = filepath.ToSlash(filepath.Clean(dir))
-	e.mu.RLock()
-	defer e.mu.RUnlock()
 	if set := e.lookup(dir); set != nil && set.Dir == dir {
 		return set.Rules
 	}
