@@ -198,6 +198,14 @@ func WithTypesNot(typesNot []string) Option {
 	return func(c *Config) { c.Ignore.TypesNot = typesNot }
 }
 
+func WithFollowSymlinks(v bool) Option {
+	return func(c *Config) { c.Walk.FollowSymlinks = v }
+}
+
+func WithMaxFileSize(n int64) Option {
+	return func(c *Config) { c.Walk.MaxFileSize = n }
+}
+
 func WithMatcher(m pattern.Matcher) Option {
 	return func(c *Config) { c.Matcher = m }
 }

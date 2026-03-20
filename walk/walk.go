@@ -158,11 +158,26 @@ func (w *Walker) walkWorker(ctx context.Context, dirCh chan string, fileCh chan<
 					path = name
 				}
 
-				if w.ignoreEngine.ShouldIgnore(path, entry.IsDir()) {
+				isDir := entry.IsDir()
+				var info fs.FileInfo
+				if entry.Type()&fs.ModeSymlink != 0 {
+					if !w.cfg.FollowSymlinks {
+						continue
+					}
+					// Follow symlink
+					var err error
+					info, err = fs.Stat(w.fsys, path)
+					if err != nil {
+						continue
+					}
+					isDir = info.IsDir()
+				}
+
+				if w.ignoreEngine.ShouldIgnore(path, isDir) {
 					continue
 				}
 
-				if entry.IsDir() {
+				if isDir {
 					pending.Add(1)
 					select {
 					case <-ctx.Done():
@@ -179,8 +194,15 @@ func (w *Walker) walkWorker(ctx context.Context, dirCh chan string, fileCh chan<
 						}(path)
 					}
 				} else {
-					info, err := entry.Info()
-					if err == nil && w.shouldSearch(path, info) {
+					if info == nil {
+						var err error
+						info, err = entry.Info()
+						if err != nil {
+							continue
+						}
+					}
+
+					if w.shouldSearch(path, info) {
 						var ref fsref.Ref
 						if root != nil {
 							ref = fsref.NewRootedRef(root, name, path, info)

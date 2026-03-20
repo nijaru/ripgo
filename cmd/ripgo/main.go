@@ -49,6 +49,8 @@ func run(ctx context.Context) int {
 		ripgo.WithNoIgnore(cfg.Ignore.NoIgnore),
 		ripgo.WithTypes(cfg.Ignore.Types),
 		ripgo.WithTypesNot(cfg.Ignore.TypesNot),
+		ripgo.WithFollowSymlinks(cfg.Walk.FollowSymlinks),
+		ripgo.WithMaxFileSize(cfg.Walk.MaxFileSize),
 	}
 	prn := newPrinter(cfg)
 	var st stats.Stats
