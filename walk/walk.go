@@ -8,6 +8,7 @@ import (
 	"runtime"
 	"sync"
 	"sync/atomic"
+	"unsafe"
 
 	"github.com/nijaru/ripgo/ignore"
 	"github.com/nijaru/ripgo/internal/fsref"
@@ -116,13 +117,13 @@ func (w *Walker) Run(ctx context.Context, paths []string, fileCh chan<- Entry) {
 	close(fileCh)
 }
 
-func (w *Walker) walkWorker(ctx context.Context, dirCh chan string, fileCh chan<- Entry, pending *atomic.Int32, closeDirOnce *sync.Once) {
-	tryClose := func() {
-		if pending.Load() == 0 {
-			closeDirOnce.Do(func() { close(dirCh) })
-		}
+func tryCloseWalk(pending *atomic.Int32, closeDirOnce *sync.Once, dirCh chan string) {
+	if pending.Load() == 0 {
+		closeDirOnce.Do(func() { close(dirCh) })
 	}
+}
 
+func (w *Walker) walkWorker(ctx context.Context, dirCh chan string, fileCh chan<- Entry, pending *atomic.Int32, closeDirOnce *sync.Once) {
 	for {
 		select {
 		case <-ctx.Done():
@@ -135,7 +136,7 @@ func (w *Walker) walkWorker(ctx context.Context, dirCh chan string, fileCh chan<
 			entries, err := fs.ReadDir(w.fsys, dir)
 			if err != nil {
 				pending.Add(-1)
-				tryClose()
+				tryCloseWalk(pending, closeDirOnce, dirCh)
 				continue
 			}
 
@@ -147,15 +148,23 @@ func (w *Walker) walkWorker(ctx context.Context, dirCh chan string, fileCh chan<
 
 			w.ignoreEngine.LoadIgnoreFile(dir)
 
+			var pathBuf []byte
+
 			for _, entry := range entries {
 				if ctx.Err() != nil {
 					return
 				}
 
 				name := entry.Name()
-				path := dir + "/" + name
+				var path string
 				if dir == "." {
 					path = name
+				} else {
+					pathBuf = append(pathBuf[:0], dir...)
+					pathBuf = append(pathBuf, '/')
+					pathBuf = append(pathBuf, name...)
+					// Use an unsafe string for checks to avoid allocations for ignored files
+					path = unsafe.String(unsafe.SliceData(pathBuf), len(pathBuf))
 				}
 
 				isDir := entry.IsDir()
@@ -177,6 +186,11 @@ func (w *Walker) walkWorker(ctx context.Context, dirCh chan string, fileCh chan<
 					continue
 				}
 
+				// File passed ignore checks. If it's not in the root dir, allocate a safe string for persistence.
+				if dir != "." {
+					path = dir + "/" + name
+				}
+
 				if isDir {
 					pending.Add(1)
 					select {
@@ -188,7 +202,7 @@ func (w *Walker) walkWorker(ctx context.Context, dirCh chan string, fileCh chan<
 							select {
 							case <-ctx.Done():
 								pending.Add(-1)
-								tryClose()
+								tryCloseWalk(pending, closeDirOnce, dirCh)
 							case dirCh <- p:
 							}
 						}(path)
@@ -220,7 +234,7 @@ func (w *Walker) walkWorker(ctx context.Context, dirCh chan string, fileCh chan<
 			}
 
 			pending.Add(-1)
-			tryClose()
+			tryCloseWalk(pending, closeDirOnce, dirCh)
 		}
 	}
 }
