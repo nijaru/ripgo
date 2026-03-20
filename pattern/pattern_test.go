@@ -218,6 +218,74 @@ func TestPCREMatchFile(t *testing.T) {
 	}
 }
 
+func TestLiterals_LiteralMatcher(t *testing.T) {
+	m, _ := New(Config{Pattern: "hello", FixedStrings: true})
+	lits := m.Literals()
+	if len(lits) != 1 || string(lits[0]) != "hello" {
+		t.Fatalf("expected [hello], got %v", lits)
+	}
+
+	// case-insensitive → nil
+	m, _ = New(Config{Pattern: "hello", FixedStrings: true, IgnoreCase: true})
+	if m.Literals() != nil {
+		t.Fatal("expected nil for case-insensitive literal")
+	}
+}
+
+func TestLiterals_RegexAlternation(t *testing.T) {
+	m, _ := New(Config{Pattern: `(foo|bar|baz)`})
+	lits := m.Literals()
+	if len(lits) != 3 {
+		t.Fatalf("expected 3 literals, got %d: %v", len(lits), lits)
+	}
+	seen := map[string]bool{}
+	for _, l := range lits {
+		seen[string(l)] = true
+	}
+	for _, want := range []string{"foo", "bar", "baz"} {
+		if !seen[want] {
+			t.Errorf("missing literal %q", want)
+		}
+	}
+}
+
+func TestLiterals_RegexAlternation_Two(t *testing.T) {
+	m, _ := New(Config{Pattern: `(abc|def)`})
+	lits := m.Literals()
+	if len(lits) != 2 {
+		t.Fatalf("expected 2 literals, got %d: %v", len(lits), lits)
+	}
+}
+
+func TestLiterals_RegexNonAlternation(t *testing.T) {
+	m, _ := New(Config{Pattern: `foo.*bar`})
+	if m.Literals() != nil {
+		t.Fatal("expected nil for non-alternation regex")
+	}
+
+	m, _ = New(Config{Pattern: `\d+`})
+	if m.Literals() != nil {
+		t.Fatal("expected nil for \\d+")
+	}
+}
+
+func TestLiterals_RegexAlternationCaseInsensitive(t *testing.T) {
+	m, _ := New(Config{Pattern: `(foo|bar)`, IgnoreCase: true})
+	if m.Literals() != nil {
+		t.Fatal("expected nil for case-insensitive alternation")
+	}
+}
+
+func TestLiterals_RegexWithPrefix(t *testing.T) {
+	// LiteralPrefix returns "foo" — Literals should return nil since single literal is handled by Literal()
+	m, _ := New(Config{Pattern: `foo.*bar`})
+	if m.Literals() != nil {
+		// foo.*bar has LiteralPrefix "foo", so Literals should be nil
+		// (the single-literal path already handles this)
+		t.Fatal("expected nil when LiteralPrefix already provides a prefix")
+	}
+}
+
 func BenchmarkPattern(b *testing.B) {
 	lines := [][]byte{
 		[]byte("func main() {"),

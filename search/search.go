@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"io/fs"
 	"sync"
+	"time"
 
+	"github.com/nijaru/ripgo/internal/aho"
 	"github.com/nijaru/ripgo/internal/fsref"
 	"github.com/nijaru/ripgo/internal/osfs"
 	"github.com/nijaru/ripgo/pattern"
@@ -56,6 +58,8 @@ type Result struct {
 	Entries []Entry
 	// Binary is true if the file was detected as binary.
 	Binary bool
+	// ModTime is the file's last modification time.
+	ModTime time.Time
 	// Error is any error encountered while searching this file.
 	Error error
 }
@@ -98,9 +102,10 @@ var submatchPool = sync.Pool{
 
 // Searcher scans files for matches against a compiled pattern.
 type Searcher struct {
-	fsys    fs.FS
-	cfg     Config
-	matcher pattern.Matcher
+	fsys      fs.FS
+	cfg       Config
+	matcher   pattern.Matcher
+	prefilter *aho.Machine
 }
 
 // NewSearcher creates a searcher with the given config and matcher.
@@ -109,10 +114,18 @@ func NewSearcher(fsys fs.FS, cfg Config, matcher pattern.Matcher) *Searcher {
 	if fsys == nil {
 		fsys = osfs.New()
 	}
+
+	// Build Aho-Corasick pre-filter from extracted literals.
+	var prefilter *aho.Machine
+	if lits := matcher.Literals(); len(lits) >= 2 {
+		prefilter = aho.New(lits)
+	}
+
 	return &Searcher{
-		fsys:    fsys,
-		cfg:     cfg,
-		matcher: matcher,
+		fsys:      fsys,
+		cfg:       cfg,
+		matcher:   matcher,
+		prefilter: prefilter,
 	}
 }
 
@@ -133,6 +146,9 @@ func (s *Searcher) Search(ref fsref.Ref) (Result, error) {
 	var unmap func() error
 
 	info := ref.Info()
+	if info != nil {
+		result.ModTime = info.ModTime()
+	}
 	// Lower threshold to 128KB to reduce syscall overhead for medium files.
 	if info != nil && info.Size() > 128*1024 {
 		data, unmap, err = ref.Mmap()
@@ -149,9 +165,13 @@ func (s *Searcher) Search(ref fsref.Ref) (Result, error) {
 		}
 	}
 
-	// Pre-filter: if matcher has a literal, check if it's present in the entire file first.
-	// bytes.Contains is highly optimized (SIMD on many platforms).
-	if lit := s.matcher.Literal(); len(lit) > 0 {
+	// Pre-filter: skip files that can't possibly match.
+	// Use Aho-Corasick for multiple literals, bytes.Contains for single.
+	if s.prefilter != nil {
+		if !s.prefilter.MatchesAny(data) {
+			return result, nil
+		}
+	} else if lit := s.matcher.Literal(); len(lit) > 0 {
 		if !bytes.Contains(data, lit) {
 			return result, nil
 		}
@@ -281,7 +301,7 @@ func (s *Searcher) buildEntries(lines [][]byte, matchLines []int, matches []Matc
 				content := lines[j-1]
 				if mapped {
 					content = bytes.Clone(content)
-					}
+				}
 				entries = append(entries, Entry{
 					Kind:      EntryContext,
 					Line:      j,

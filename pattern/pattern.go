@@ -37,6 +37,12 @@ type Matcher interface {
 	// Literal returns the fixed literal string if the matcher is purely literal,
 	// or an empty slice if it's a regex. This allows for fast pre-filtering.
 	Literal() []byte
+	// Literals returns all mandatory literal strings for multi-pattern
+	// pre-filtering (e.g., Aho-Corasick). Returns nil if extraction is not
+	// possible (regex metacharacters, case-insensitive without a clean set, etc.).
+	// When non-nil, every byte slice must appear in the data for a match to be
+	// possible. Used by the search pre-filter to skip files early.
+	Literals() [][]byte
 }
 
 // RegexMatcher wraps stdlib regexp for pattern matching.
@@ -51,6 +57,36 @@ func (m *RegexMatcher) Literal() []byte {
 		return []byte(prefix)
 	}
 	return nil
+}
+
+// Literals extracts mandatory literals from simple alternation patterns like
+// (foo|bar|baz). Returns nil for non-alternation regexes or case-insensitive
+// patterns where Literal() already has a prefix.
+func (m *RegexMatcher) Literals() [][]byte {
+	src := m.re.String()
+
+	// If the literal prefix already works, no need for multi-literal.
+	if p, complete := m.re.LiteralPrefix(); complete {
+		return [][]byte{[]byte(p)}
+	} else if p != "" {
+		return nil
+	}
+
+	// Check for case-insensitive flag at the start.
+	caseInsensitive := false
+	pattern := src
+	if strings.HasPrefix(pattern, "(?i:") || strings.HasPrefix(pattern, "(?i)") {
+		caseInsensitive = true
+	}
+	if caseInsensitive {
+		return nil // AC can't do case-insensitive matching cheaply.
+	}
+
+	lits := extractAlternationLiterals(pattern)
+	if len(lits) < 2 {
+		return nil
+	}
+	return lits
 }
 
 // Match searches for the pattern in a single line.
@@ -139,6 +175,18 @@ func (m *PCREMatcher) Literal() []byte {
 	return []byte(m.pattern)
 }
 
+// Literals extracts literals from simple alternation patterns.
+func (m *PCREMatcher) Literals() [][]byte {
+	if strings.HasPrefix(m.pattern, "(?") {
+		return nil
+	}
+	lits := extractAlternationLiterals(m.pattern)
+	if len(lits) < 2 {
+		return nil
+	}
+	return lits
+}
+
 // newPCREMatcher compiles a PCRE2-compatible matcher.
 func newPCREMatcher(pattern string, ignoreCase bool) (*PCREMatcher, error) {
 	var flags regexp2.RegexOptions
@@ -152,7 +200,54 @@ func newPCREMatcher(pattern string, ignoreCase bool) (*PCREMatcher, error) {
 	return &PCREMatcher{re: re, pattern: pattern}, nil
 }
 
-// runeToByteOffset converts a rune index to a byte offset in s.
+// extractAlternationLiterals parses simple alternation patterns of the form
+// (lit1|lit2|lit3) and returns the individual literals. Returns nil if the
+// pattern is not a simple alternation of literal branches.
+func extractAlternationLiterals(pattern string) [][]byte {
+	// Must match: (branch1|branch2|...)
+	if len(pattern) < 5 { // min: (a|b)
+		return nil
+	}
+	if pattern[0] != '(' || pattern[len(pattern)-1] != ')' {
+		return nil
+	}
+	inner := pattern[1 : len(pattern)-1]
+
+	var lits [][]byte
+	start := 0
+	for i := 0; i <= len(inner); i++ {
+		if i == len(inner) || inner[i] == '|' {
+			branch := inner[start:i]
+			if !isLiteralBytes(branch) {
+				return nil
+			}
+			lits = append(lits, []byte(branch))
+			start = i + 1
+		}
+	}
+	if len(lits) < 2 {
+		return nil
+	}
+	return lits
+}
+
+// isLiteralBytes reports whether s contains no regex metacharacters.
+func isLiteralBytes(s string) bool {
+	if len(s) == 0 {
+		return false
+	}
+	for _, r := range s {
+		switch r {
+		case '.', '*', '+', '?', '^', '$', '{', '}', '[', ']', '|', '(', ')', '\\':
+			return false
+		default:
+			if r <= 31 || r == 127 {
+				return false
+			}
+		}
+	}
+	return true
+}
 func runeToByteOffset(s string, runeIdx int) int {
 	if runeIdx <= 0 {
 		return 0
@@ -215,6 +310,15 @@ func (m *LiteralMatcher) Literal() []byte {
 		return nil
 	}
 	return m.pattern
+}
+
+// Literals returns the literal as a single-element slice, or nil if
+// case-insensitive (AC can't cheaply handle case-folded matching).
+func (m *LiteralMatcher) Literals() [][]byte {
+	if m.caseFold {
+		return nil
+	}
+	return [][]byte{m.pattern}
 }
 
 // CaseFold returns true if this matcher performs case-insensitive matching.
