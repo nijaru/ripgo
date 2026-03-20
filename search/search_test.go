@@ -290,7 +290,7 @@ func TestSearchContextWithMaxCount(t *testing.T) {
 
 func TestSearchBinary(t *testing.T) {
 	m, _ := pattern.New(pattern.Config{Pattern: "hello"})
-	
+
 	// Create binary file
 	dir := t.TempDir()
 	binPath := filepath.Join(dir, "data.bin")
@@ -328,7 +328,7 @@ func TestSearchBinary(t *testing.T) {
 
 	t.Run("only_binary", func(t *testing.T) {
 		s := NewSearcher(nil, Config{OnlyBinary: true}, m)
-		
+
 		// Binary file should have matches
 		res, _ := s.SearchPath(binPath, nil)
 		if len(res.Matches) == 0 {
@@ -439,10 +439,56 @@ func TestSearchSubmatchesPCRE(t *testing.T) {
 	if got != "hello" {
 		t.Errorf("full match: got %q, want %q", got, "hello")
 	}
-	
+
 	got1 := string(m0.LineBytes[m0.Submatches[1][0]:m0.Submatches[1][1]])
 	if got1 != "hello" {
 		t.Errorf("group 1: got %q, want %q", got1, "hello")
+	}
+}
+
+func TestSearchACPrelfilter(t *testing.T) {
+	// Pattern with 2 literals triggers Aho-Corasick pre-filter.
+	m, err := pattern.New(pattern.Config{Pattern: `(alpha|bravo)`})
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := NewSearcher(nil, Config{}, m)
+
+	// Verify the pre-filter was built.
+	if s.prefilter == nil {
+		t.Fatal("expected AC pre-filter for 2+ literals")
+	}
+
+	dir := t.TempDir()
+
+	// File containing one of the literals.
+	havePath := filepath.Join(dir, "have.txt")
+	if err := os.WriteFile(havePath, []byte("no match here\nalpha is first\nalso bravo here\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// File containing neither literal.
+	missPath := filepath.Join(dir, "miss.txt")
+	if err := os.WriteFile(missPath, []byte("just some text\nnothing relevant here\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// File with the literal should match.
+	res1, err := s.SearchPath(havePath, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res1.Matches) != 2 {
+		t.Errorf("expected 2 matches in have.txt, got %d", len(res1.Matches))
+	}
+
+	// File without either literal should be skipped by pre-filter.
+	res2, err := s.SearchPath(missPath, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res2.Matches) != 0 {
+		t.Errorf("expected 0 matches in miss.txt, got %d", len(res2.Matches))
 	}
 }
 

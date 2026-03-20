@@ -88,12 +88,6 @@ func (r *Result) Release() {
 	}
 }
 
-// MappableFS is an optional interface for filesystems that support mmap.
-type MappableFS interface {
-	fs.FS
-	Mmap(name string) ([]byte, func() error, error)
-}
-
 var submatchPool = sync.Pool{
 	New: func() any {
 		return make([][2]int, 0, 16)
@@ -136,6 +130,8 @@ func (s *Searcher) SearchPath(path string, info fs.FileInfo) (Result, error) {
 }
 
 // Search reads a file via the provided Ref and returns all matches.
+// When context lines are requested, a ring buffer retains only the last
+// <before> lines, avoiding O(N) memory for large files with few matches.
 func (s *Searcher) Search(ref fsref.Ref) (Result, error) {
 	path := ref.DisplayPath()
 	result := Result{Path: path}
@@ -186,136 +182,151 @@ func (s *Searcher) Search(ref fsref.Ref) (Result, error) {
 	}
 
 	matchCount := 0
-	var matchLines []int
-	var lines [][]byte
 	needContext := s.cfg.Before > 0 || s.cfg.After > 0
 
 	// Pre-allocate matches slice.
 	result.Matches = make([]Match, 0, 16)
 
+	// Ring buffer for context lines — only retains last <before> lines.
+	type ringLine struct {
+		line     int
+		lineData []byte
+	}
+	beforeCap := min(s.cfg.Before, 32)
+	ring := make([]ringLine, beforeCap)
+	ringFront := 0 // points to oldest slot
+	ringCount := 0
+
+	// Post-match state for emitting after-context.
+	afterActive := false
+	afterRem := 0
+	lastEmitted := 0
+
 	lineNum := 1
 	for line := range bytes.Lines(data) {
 		line = bytes.TrimSuffix(line, []byte("\n"))
 
-		if needContext {
-			lines = append(lines, line)
+		if needContext && afterActive {
+			// Emitting after-context for a previous match.
+			afterRem--
+			lineToEmit := line
+			if mapped {
+				lineToEmit = bytes.Clone(line)
+			}
+			result.Entries = append(result.Entries, Entry{
+				Kind:      EntryContext,
+				Line:      lineNum,
+				LineBytes: lineToEmit,
+			})
+			lastEmitted = lineNum
+
+			if afterRem <= 0 {
+				afterActive = false
+				if s.cfg.MaxCount > 0 && matchCount >= s.cfg.MaxCount {
+					break
+				}
+			}
+			lineNum++
+			continue
 		}
 
+		// Check match limit.
 		if s.cfg.MaxCount > 0 && matchCount >= s.cfg.MaxCount {
 			if !needContext {
 				break
 			}
-			lastMatchLine := matchLines[len(matchLines)-1]
-			if lineNum >= lastMatchLine+s.cfg.After {
+			break
+		}
+
+		locs, ok := s.matcher.Match(line)
+		if !ok {
+			// No match — add to before ring buffer.
+			if needContext && beforeCap > 0 {
+				ring[(ringFront+ringCount)%beforeCap] = ringLine{lineNum, line}
+				if ringCount < beforeCap {
+					ringCount++
+				} else {
+					ringFront = (ringFront + 1) % beforeCap
+				}
+			}
+			lineNum++
+			continue
+		}
+
+		// Match found.
+		content := line
+
+		submatches := submatchPool.Get().([][2]int)
+		for i := 0; i < len(locs); i += 2 {
+			if locs[i] >= 0 {
+				submatches = append(submatches, [2]int{locs[i], locs[i+1]})
+			} else {
+				submatches = append(submatches, [2]int{-1, -1})
+			}
+		}
+
+		match := Match{
+			Line:       lineNum,
+			Column:     locs[0] + 1,
+			LineBytes:  content,
+			Submatches: submatches,
+		}
+		result.Matches = append(result.Matches, match)
+		matchCount++
+
+		if needContext {
+			// Emit before-context from ring buffer.
+			for i := 0; i < ringCount; i++ {
+				idx := (ringFront + i) % beforeCap
+				if ring[idx].line > lastEmitted {
+					cl := ring[idx].lineData
+					if mapped {
+						cl = bytes.Clone(cl)
+					}
+					result.Entries = append(result.Entries, Entry{
+						Kind:      EntryContext,
+						Line:      ring[idx].line,
+						LineBytes: cl,
+					})
+					lastEmitted = ring[idx].line
+				}
+			}
+
+			// Emit match — clone here (once) rather than in the Match struct.
+			matchContent := content
+			if mapped {
+				matchContent = bytes.Clone(content)
+			}
+			result.Entries = append(result.Entries, Entry{
+				Kind:      EntryMatch,
+				Line:      lineNum,
+				LineBytes: matchContent,
+				Column:    match.Column,
+			})
+			result.Matches[len(result.Matches)-1].LineBytes = matchContent
+			lastEmitted = lineNum
+
+			// Start after-context phase.
+			if s.cfg.After > 0 {
+				afterActive = true
+				afterRem = s.cfg.After
+			} else if s.cfg.MaxCount > 0 && matchCount >= s.cfg.MaxCount {
 				break
 			}
 		} else {
-			locs, ok := s.matcher.Match(line)
-			if ok {
-				content := line
-				if mapped {
-					content = bytes.Clone(line)
-				}
-
-				submatches := submatchPool.Get().([][2]int)
-				for i := 0; i < len(locs); i += 2 {
-					if locs[i] >= 0 {
-						submatches = append(submatches, [2]int{locs[i], locs[i+1]})
-					} else {
-						submatches = append(submatches, [2]int{-1, -1})
-					}
-				}
-
-				match := Match{
-					Line:       lineNum,
-					Column:     locs[0] + 1,
-					LineBytes:  content,
-					Submatches: submatches,
-				}
-				result.Matches = append(result.Matches, match)
-				matchLines = append(matchLines, lineNum)
-				matchCount++
-
-				if s.cfg.MaxCount > 0 && matchCount >= s.cfg.MaxCount {
-					if !needContext || s.cfg.After == 0 {
-						break
-					}
-				}
+			// No context — clone match content directly into Match struct.
+			if mapped {
+				result.Matches[len(result.Matches)-1].LineBytes = bytes.Clone(content)
+			}
+			if s.cfg.MaxCount > 0 && matchCount >= s.cfg.MaxCount {
+				break
 			}
 		}
 
 		lineNum++
 	}
 
-	if needContext && len(matchLines) > 0 {
-		result.Entries = s.buildEntries(lines, matchLines, result.Matches, mapped)
-	}
-
 	return result, nil
-}
-
-// buildEntries constructs the ordered entry list with context lines.
-func (s *Searcher) buildEntries(lines [][]byte, matchLines []int, matches []Match, mapped bool) []Entry {
-	before, after := s.cfg.Before, s.cfg.After
-	numLines := len(lines)
-	mIdx := 0
-	var entries []Entry
-	lastAfter := 0
-
-	for i := 0; i < numLines && mIdx < len(matchLines); i++ {
-		lineNum := i + 1
-		mLine := matchLines[mIdx]
-
-		if lineNum == mLine {
-			for j := max(mLine-before, lastAfter+1); j < mLine; j++ {
-				if j >= 1 && j <= numLines {
-					content := lines[j-1]
-					if mapped {
-						content = bytes.Clone(content)
-					}
-					entries = append(entries, Entry{
-						Kind:      EntryContext,
-						Line:      j,
-						LineBytes: content,
-					})
-				}
-			}
-
-			var content []byte
-			col := 0
-			for _, m := range matches {
-				if m.Line == mLine {
-					col = m.Column
-					content = m.LineBytes
-					break
-				}
-			}
-			entries = append(entries, Entry{
-				Kind:      EntryMatch,
-				Line:      mLine,
-				LineBytes: content,
-				Column:    col,
-			})
-
-			for j := mLine + 1; j <= min(mLine+after, numLines); j++ {
-				content := lines[j-1]
-				if mapped {
-					content = bytes.Clone(content)
-				}
-				entries = append(entries, Entry{
-					Kind:      EntryContext,
-					Line:      j,
-					LineBytes: content,
-				})
-			}
-			lastAfter = mLine + after
-			mIdx++
-			i = mLine + after - 1
-			continue
-		}
-	}
-
-	return entries
 }
 
 // SearchMultiline reads the entire file and matches across line boundaries.
