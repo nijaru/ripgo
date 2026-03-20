@@ -38,15 +38,15 @@ func run(ctx context.Context) int {
 
 	// Translate internal/config to ripgo high-level options
 	searchOpts := []ripgo.Option{
-	        ripgo.WithThreads(cfg.Threads),
-	        ripgo.WithFS(cfg.FS),
-	        ripgo.WithIgnoreCase(cfg.Pattern.IgnoreCase),
-	        ripgo.WithFixedStrings(cfg.Pattern.FixedStrings),
-	        ripgo.WithPcre2(cfg.Pattern.Pcre2),
-	        ripgo.WithContext(cfg.Search.Before, cfg.Search.After),
-	        ripgo.WithMaxCount(cfg.Search.MaxCount),
-	        ripgo.WithHidden(cfg.Ignore.Hidden),
-	        ripgo.WithNoIgnore(cfg.Ignore.NoIgnore),
+		ripgo.WithThreads(cfg.Threads),
+		ripgo.WithFS(cfg.FS),
+		ripgo.WithIgnoreCase(cfg.Pattern.IgnoreCase),
+		ripgo.WithFixedStrings(cfg.Pattern.FixedStrings),
+		ripgo.WithPcre2(cfg.Pattern.Pcre2),
+		ripgo.WithContext(cfg.Search.Before, cfg.Search.After),
+		ripgo.WithMaxCount(cfg.Search.MaxCount),
+		ripgo.WithHidden(cfg.Ignore.Hidden),
+		ripgo.WithNoIgnore(cfg.Ignore.NoIgnore),
 	}
 	prn := newPrinter(cfg)
 	var st stats.Stats
@@ -91,6 +91,20 @@ func sortResults(results []search.Result, mode string) {
 		slices.SortFunc(results, func(a, b search.Result) int {
 			return strings.Compare(a.Path, b.Path)
 		})
+	case "modified":
+		slices.SortFunc(results, func(a, b search.Result) int {
+			return a.ModTime.Compare(b.ModTime)
+		})
+	case "created":
+		// Go's fs.FileInfo doesn't expose birth time; fall back to modification time.
+		slices.SortFunc(results, func(a, b search.Result) int {
+			return a.ModTime.Compare(b.ModTime)
+		})
+	case "accessed":
+		// Go's fs.FileInfo doesn't expose access time portably; fall back to modification time.
+		slices.SortFunc(results, func(a, b search.Result) int {
+			return a.ModTime.Compare(b.ModTime)
+		})
 	}
 }
 
@@ -113,7 +127,8 @@ func newPrinter(cfg *config.Config) printer.Printer {
 			Color:      cfg.Color,
 		})
 	}
-	}
+}
+
 // discardPrinter silently consumes results (for -q / --quiet).
 type discardPrinter struct{}
 

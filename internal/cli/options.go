@@ -1,7 +1,7 @@
 package cli
 
 type Options struct {
-	Pattern          string   `arg:"" name:"pattern" help:"Pattern to search for"`
+	Pattern          string   `arg:"" name:"pattern" optional:"" help:"Pattern to search for"`
 	Paths            []string `arg:"" name:"paths" optional:"" help:"Paths to search (default: .)"`
 	FixedStrings     bool     `short:"F" help:"Interpret pattern as fixed strings"`
 	IgnoreCase       bool     `short:"i" help:"Case insensitive search"`

@@ -1,6 +1,7 @@
 package config
 
 import (
+	"fmt"
 	"io/fs"
 	"os"
 	"runtime"
@@ -67,6 +68,15 @@ const (
 
 // New translates CLI options into validated library configs.
 func New(opts cli.Options) (*Config, error) {
+	if opts.TypeList {
+		// --type-list doesn't need a pattern; return early with just TypeList set.
+		return &Config{TypeList: true}, nil
+	}
+
+	if opts.Pattern == "" {
+		return nil, fmt.Errorf("pattern required")
+	}
+
 	isTTY := term.IsTerminal(int(os.Stdout.Fd()))
 
 	paths := opts.Paths
