@@ -130,7 +130,8 @@ func (s *Searcher) Search(path string, info fs.FileInfo) (Result, error) {
 		if info == nil {
 			info, _ = fs.Stat(s.fsys, path)
 		}
-		if info != nil && info.Size() > 1024*1024 {
+		// Lower threshold to 128KB to reduce syscall overhead for medium files.
+		if info != nil && info.Size() > 128*1024 {
 			data, unmap, err = mfs.Mmap(path)
 			if err == nil {
 				mapped = true
@@ -147,6 +148,14 @@ func (s *Searcher) Search(path string, info fs.FileInfo) (Result, error) {
 		}
 		if err != nil {
 			return result, err
+		}
+	}
+
+	// Pre-filter: if matcher has a literal, check if it's present in the entire file first.
+	// bytes.Contains is highly optimized (SIMD on many platforms).
+	if lit := s.matcher.Literal(); len(lit) > 0 {
+		if !bytes.Contains(data, lit) {
+			return result, nil
 		}
 	}
 

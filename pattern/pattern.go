@@ -34,6 +34,9 @@ type Matcher interface {
 	MatchFile(data []byte) bool
 	// Name returns the matcher implementation name ("literal", "regex", or "pcre").
 	Name() string
+	// Literal returns the fixed literal string if the matcher is purely literal,
+	// or an empty slice if it's a regex. This allows for fast pre-filtering.
+	Literal() []byte
 }
 
 // RegexMatcher wraps stdlib regexp for pattern matching.
@@ -41,6 +44,8 @@ type Matcher interface {
 type RegexMatcher struct {
 	re *regexp.Regexp
 }
+
+func (m *RegexMatcher) Literal() []byte { return nil }
 
 // Match searches for the pattern in a single line.
 func (m *RegexMatcher) Match(line []byte) (locs []int, ok bool) {
@@ -108,6 +113,8 @@ func (m *PCREMatcher) MatchFile(data []byte) bool {
 
 // Name returns "pcre".
 func (m *PCREMatcher) Name() string { return "pcre" }
+
+func (m *PCREMatcher) Literal() []byte { return nil }
 
 // newPCREMatcher compiles a PCRE2-compatible matcher.
 func newPCREMatcher(pattern string, ignoreCase bool) (*PCREMatcher, error) {
@@ -177,6 +184,15 @@ func (m *LiteralMatcher) MatchFile(data []byte) bool {
 
 // Name returns "literal".
 func (m *LiteralMatcher) Name() string { return "literal" }
+
+// Literal returns the fixed literal string if the matcher is purely literal
+// and case-sensitive.
+func (m *LiteralMatcher) Literal() []byte {
+	if m.caseFold {
+		return nil
+	}
+	return m.pattern
+}
 
 // CaseFold returns true if this matcher performs case-insensitive matching.
 func (m *LiteralMatcher) CaseFold() bool { return m.caseFold }
