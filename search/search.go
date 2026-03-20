@@ -3,9 +3,8 @@ package search
 import (
 	"bytes"
 	"io/fs"
-	"os"
-	"syscall"
 
+	"github.com/nijaru/ripgo/internal/osfs"
 	"github.com/nijaru/ripgo/pattern"
 )
 
@@ -55,6 +54,8 @@ type Result struct {
 	Entries []Entry
 	// Binary is true if the file was detected as binary.
 	Binary bool
+	// Error is any error encountered while searching this file.
+	Error error
 }
 
 // Config holds search behavior options.
@@ -71,9 +72,15 @@ type Config struct {
 	OnlyBinary bool
 }
 
+// MappableFS is an optional interface for filesystems that support mmap.
+type MappableFS interface {
+	fs.FS
+	Mmap(name string) ([]byte, func() error, error)
+}
+
 // Searcher scans files for matches against a compiled pattern.
 type Searcher struct {
-	fs      fs.FS
+	fsys    fs.FS
 	cfg     Config
 	matcher pattern.Matcher
 }
@@ -81,45 +88,42 @@ type Searcher struct {
 // NewSearcher creates a searcher with the given config and matcher.
 // If fsys is nil, it defaults to the local OS filesystem.
 func NewSearcher(fsys fs.FS, cfg Config, matcher pattern.Matcher) *Searcher {
+	if fsys == nil {
+		fsys = osfs.New()
+	}
 	return &Searcher{
-		fs:      fsys,
+		fsys:    fsys,
 		cfg:     cfg,
 		matcher: matcher,
 	}
 }
 
 // Search reads a file and returns all matches.
-// It uses ReadFile + bytes.Split to ensure all line data lives in a single
-// contiguous buffer. Lines are sub-slices of this buffer, avoiding per-line allocations.
-// For large files (>1MB) without a custom VFS, it uses syscall.Mmap.
 func (s *Searcher) Search(path string) (Result, error) {
 	result := Result{Path: path}
 
 	var data []byte
 	var err error
 	var mapped bool
+	var unmap func() error
 
-	if s.fs == nil {
-		f, err := os.Open(path)
-		if err == nil {
-			defer f.Close()
-			info, err := f.Stat()
-			// Mmap files > 1MB. Must be large enough to justify syscall overhead.
-			if err == nil && info.Size() > 1024*1024 {
-				data, err = syscall.Mmap(int(f.Fd()), 0, int(info.Size()), syscall.PROT_READ, syscall.MAP_SHARED)
-				if err == nil {
-					mapped = true
-					defer syscall.Munmap(data)
-				}
+	// Try memory mapping if supported
+	if mfs, ok := s.fsys.(MappableFS); ok {
+		info, err := fs.Stat(s.fsys, path)
+		if err == nil && info.Size() > 1024*1024 {
+			data, unmap, err = mfs.Mmap(path)
+			if err == nil {
+				mapped = true
+				defer unmap()
 			}
 		}
 	}
 
 	if !mapped {
-		if s.fs != nil {
-			data, err = fs.ReadFile(s.fs, path)
+		if rfs, ok := s.fsys.(fs.ReadFileFS); ok {
+			data, err = rfs.ReadFile(path)
 		} else {
-			data, err = os.ReadFile(path)
+			data, err = fs.ReadFile(s.fsys, path)
 		}
 		if err != nil {
 			return result, err
@@ -147,83 +151,91 @@ func (s *Searcher) Search(path string) (Result, error) {
 	var line []byte
 
 	for {
-	        idx := bytes.IndexByte(remaining, '\n')
-	        if idx == -1 {
-	                if len(remaining) > 0 {
-	                        line = remaining
-	                } else {
-	                        break
-	                }
-	        } else {
-	                line = remaining[:idx]
-	        }
+		idx := bytes.IndexByte(remaining, '\n')
+		if idx == -1 {
+			if len(remaining) > 0 {
+				line = remaining
+			} else {
+				break
+			}
+		} else {
+			line = remaining[:idx]
+		}
 
-	        if needContext {
-	                lines = append(lines, line)
-	        }
+		if needContext {
+			lines = append(lines, line)
+		}
 
-	        // If we already hit max count, we are just gathering 'after' context lines.
-	        // We don't need to match anymore.
-	        if s.cfg.MaxCount > 0 && matchCount >= s.cfg.MaxCount {
-	                if !needContext {
-	                        break
-	                }
-	                lastMatchLine := matchLines[len(matchLines)-1]
-	                if lineNum >= lastMatchLine+s.cfg.After {
-	                        break
-	                }
-	        } else {
-	                locs, ok := s.matcher.Match(line)
-	                if ok {
-	                        content := line
-	                        if mapped {
-	                                content = bytes.Clone(line)
-	                        }
-	                        match := Match{
-	                                Line:       lineNum,
-	                                Column:     locs[0] + 1,
-	                                LineBytes:  content,
-	                                Submatches: [][2]int{{locs[0], locs[1]}},
-	                        }
-	                        result.Matches = append(result.Matches, match)
-	                        matchLines = append(matchLines, lineNum)
-	                        matchCount++
+		if s.cfg.MaxCount > 0 && matchCount >= s.cfg.MaxCount {
+			if !needContext {
+				break
+			}
+			lastMatchLine := matchLines[len(matchLines)-1]
+			if lineNum >= lastMatchLine+s.cfg.After {
+				break
+			}
+		} else {
+			locs, ok := s.matcher.Match(line)
+			if ok {
+				content := line
+				if mapped {
+					content = bytes.Clone(line)
+				}
 
-	                        if s.cfg.MaxCount > 0 && matchCount >= s.cfg.MaxCount {
-	                                if !needContext || s.cfg.After == 0 {
-	                                        break
-	                                }
-	                        }
-	                }
-	        }
+				submatches := make([][2]int, 0, len(locs)/2)
+				for i := 0; i < len(locs); i += 2 {
+					if locs[i] >= 0 {
+						submatches = append(submatches, [2]int{locs[i], locs[i+1]})
+					} else {
+						submatches = append(submatches, [2]int{-1, -1})
+					}
+				}
 
-	        if idx == -1 {
-	                break
-	        }
-	        remaining = remaining[idx+1:]
-	        lineNum++
+				match := Match{
+					Line:       lineNum,
+					Column:     locs[0] + 1,
+					LineBytes:  content,
+					Submatches: submatches,
+				}
+				result.Matches = append(result.Matches, match)
+				matchLines = append(matchLines, lineNum)
+				matchCount++
+
+				if s.cfg.MaxCount > 0 && matchCount >= s.cfg.MaxCount {
+					if !needContext || s.cfg.After == 0 {
+						break
+					}
+				}
+			}
+		}
+
+		if idx == -1 {
+			break
+		}
+		remaining = remaining[idx+1:]
+		lineNum++
 	}
 
 	if needContext && len(matchLines) > 0 {
-	        result.Entries = s.buildEntries(lines, matchLines, result.Matches, mapped)
+		result.Entries = s.buildEntries(lines, matchLines, result.Matches, mapped)
 	}
 
 	return result, nil
-	}
+}
+
 // buildEntries constructs the ordered entry list with context lines.
 func (s *Searcher) buildEntries(lines [][]byte, matchLines []int, matches []Match, mapped bool) []Entry {
 	before, after := s.cfg.Before, s.cfg.After
 	numLines := len(lines)
 	mIdx := 0
 	var entries []Entry
-	lastAfter := 0 // tracks last line added as after-context
+	lastAfter := 0
 
 	for i := 0; i < numLines && mIdx < len(matchLines); i++ {
 		lineNum := i + 1
 		mLine := matchLines[mIdx]
 
 		if lineNum == mLine {
-			// Add before-context lines
 			for j := max(mLine-before, lastAfter+1); j < mLine; j++ {
 				if j >= 1 && j <= numLines {
 					content := lines[j-1]
@@ -238,13 +250,12 @@ func (s *Searcher) buildEntries(lines [][]byte, matchLines []int, matches []Matc
 				}
 			}
 
-			// Add the match line
 			var content []byte
 			col := 0
 			for _, m := range matches {
 				if m.Line == mLine {
 					col = m.Column
-					content = m.LineBytes // already cloned if mapped
+					content = m.LineBytes
 					break
 				}
 			}
@@ -255,12 +266,11 @@ func (s *Searcher) buildEntries(lines [][]byte, matchLines []int, matches []Matc
 				Column:    col,
 			})
 
-			// Add after-context lines
 			for j := mLine + 1; j <= min(mLine+after, numLines); j++ {
 				content := lines[j-1]
 				if mapped {
 					content = bytes.Clone(content)
-				}
+					}
 				entries = append(entries, Entry{
 					Kind:      EntryContext,
 					Line:      j,
@@ -269,7 +279,7 @@ func (s *Searcher) buildEntries(lines [][]byte, matchLines []int, matches []Matc
 			}
 			lastAfter = mLine + after
 			mIdx++
-			i = mLine + after - 1 // loop i++ advances to mLine + after
+			i = mLine + after - 1
 			continue
 		}
 	}
@@ -281,7 +291,13 @@ func (s *Searcher) buildEntries(lines [][]byte, matchLines []int, matches []Matc
 func (s *Searcher) SearchMultiline(path string) (Result, error) {
 	result := Result{Path: path}
 
-	data, err := os.ReadFile(path)
+	var data []byte
+	var err error
+	if rfs, ok := s.fsys.(fs.ReadFileFS); ok {
+		data, err = rfs.ReadFile(path)
+	} else {
+		data, err = fs.ReadFile(s.fsys, path)
+	}
 	if err != nil {
 		return result, err
 	}

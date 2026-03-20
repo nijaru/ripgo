@@ -27,6 +27,8 @@ type Config struct {
 	FilesWithMatches bool
 	Quiet            bool
 	Json             bool
+	Heading          bool
+	Sort             string
 	TypeList         bool
 	Threads          int
 }
@@ -69,6 +71,7 @@ func New(opts cli.Options) (*Config, error) {
 		FixedStrings: opts.FixedStrings,
 		IgnoreCase:   opts.IgnoreCase,
 		SmartCase:    opts.SmartCase,
+		Pcre2:        opts.Pcre2,
 	}
 
 	scfg := search.Config{
@@ -124,6 +127,8 @@ func New(opts cli.Options) (*Config, error) {
 		FilesWithMatches: opts.FilesWithMatches,
 		Quiet:            opts.Quiet,
 		Json:             opts.Json,
+		Heading:          opts.Heading,
+		Sort:             opts.Sort,
 		TypeList:         opts.TypeList,
 		Threads:          threads,
 	}, nil

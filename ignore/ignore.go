@@ -7,6 +7,7 @@ package ignore
 
 import (
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -291,18 +292,26 @@ func (s *IgnoreSet) matchRules(relPath string, isDir bool) (ignored bool, matche
 
 // Engine manages ignore rules and glob filters for file traversal.
 type Engine struct {
-        cfg          Config
-        includes     []glob.Glob
-        excludes     []glob.Glob
-        typeIncludes []glob.Glob
-        typeExcludes []glob.Glob
-        sets         map[string]*IgnoreSet
-        mu           sync.RWMutex
-        baseRelSlash string // path from cwd, forward-slash form (cached for ShouldIgnore)
+	fs           fs.FS
+	cfg          Config
+	includes     []glob.Glob
+	excludes     []glob.Glob
+	typeIncludes []glob.Glob
+	typeExcludes []glob.Glob
+	sets         map[string]*IgnoreSet
+	mu           sync.RWMutex
+	baseRelSlash string // path from cwd, forward-slash form (cached for ShouldIgnore)
 }
+
 // NewEngine creates an ignore engine from the given config.
 func NewEngine(cfg Config) (*Engine, error) {
+	return NewEngineFS(nil, cfg)
+}
+
+// NewEngineFS creates an ignore engine from the given config and filesystem.
+func NewEngineFS(fsys fs.FS, cfg Config) (*Engine, error) {
 	engine := &Engine{
+		fs:       fsys,
 		cfg:      cfg,
 		sets:     make(map[string]*IgnoreSet),
 		includes: make([]glob.Glob, 0, len(cfg.GlobIncludes)),
@@ -310,8 +319,10 @@ func NewEngine(cfg Config) (*Engine, error) {
 	}
 
 	// Pre-compute the cwd-relative path to avoid per-file filepath.Rel calls.
-	if cwd, err := os.Getwd(); err == nil {
-		engine.baseRelSlash = filepath.ToSlash(cwd)
+	if fsys == nil {
+		if cwd, err := os.Getwd(); err == nil {
+			engine.baseRelSlash = filepath.ToSlash(cwd)
+		}
 	}
 
 	for _, p := range cfg.GlobIncludes {
@@ -430,7 +441,13 @@ func (e *Engine) LoadIgnoreFile(dir string) error {
 
         var rules []IgnoreRule
         for _, name := range []string{".gitignore", ".ignore"} {
-                data, err := os.ReadFile(filepath.Join(dir, name))
+                var data []byte
+                var err error
+                if e.fs != nil {
+                        data, err = fs.ReadFile(e.fs, filepath.Join(dir, name))
+                } else {
+                        data, err = os.ReadFile(filepath.Join(dir, name))
+                }
                 if err != nil {
                         continue
                 }
@@ -528,12 +545,23 @@ func (e *Engine) ShouldIgnore(path string, isDir bool) bool {
 	// Find the deepest ignore set that is a prefix of our path.
 	e.mu.RLock()
 	var bestSet *IgnoreSet
-	for dir, set := range e.sets {
-	        if dir == "." || dir == path || (strings.HasPrefix(path, dir) && path[len(dir)] == '/') {
-	                if bestSet == nil || len(dir) > len(bestSet.Dir) {
-	                        bestSet = set
-	                }
-	        }
+	
+	// Fast path: check parent directories for cached ignore sets
+	curr := path
+	for {
+		if set, ok := e.sets[curr]; ok {
+			bestSet = set
+			break
+		}
+		idx := strings.LastIndexByte(curr, '/')
+		if idx < 0 {
+			// Check root "."
+			if set, ok := e.sets["."]; ok {
+				bestSet = set
+			}
+			break
+		}
+		curr = curr[:idx]
 	}
 	e.mu.RUnlock()
 	if bestSet == nil {

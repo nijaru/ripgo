@@ -7,6 +7,7 @@ type Options struct {
 	IgnoreCase       bool     `short:"i" help:"Case insensitive search"`
 	SmartCase        bool     `short:"I" help:"Case insensitive unless pattern contains uppercase"`
 	Regex            bool     `short:"e" help:"Interpret pattern as regex (default)"`
+	Pcre2            bool     `short:"P" help:"Interpret pattern as PCRE2 regex"`
 	Hidden           bool     `short:"a" help:"Search hidden files"`
 	NoIgnore         bool     `name:"no-ignore" help:"Don't respect .gitignore files"`
 	FollowSymlinks   bool     `short:"L" help:"Follow symbolic links"`
@@ -29,6 +30,8 @@ type Options struct {
 	OnlyBinary       bool     `name:"only-binary" help:"Search only binary files"`
 	Json             bool     `name:"json" help:"JSON output"`
 	Multiline        bool     `short:"U" help:"Multiline search"`
+	Heading          bool     `name:"heading" default:"false" negatable:"" help:"Show filename once per group of matches"`
+	Sort             string   `name:"sort" help:"Sort results (path, modified, accessed, created, none) (default: none)"`
 	Threads          int      `short:"j" help:"Number of worker threads (default: auto)"`
 	Version          bool     `short:"v" help:"Show version"`
 }

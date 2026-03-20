@@ -374,6 +374,78 @@ func TestSearchMmap(t *testing.T) {
 	}
 }
 
+func TestSearchSubmatches(t *testing.T) {
+	// Regex with capture groups
+	m, err := pattern.New(pattern.Config{Pattern: `(hello) (world)`})
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := NewSearcher(nil, Config{}, m)
+
+	path := createTempFile(t, "line 1: hello world\nline 2: no match\n")
+	result, err := s.Search(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(result.Matches) != 1 {
+		t.Fatalf("expected 1 match, got %d", len(result.Matches))
+	}
+
+	m0 := result.Matches[0]
+	// Submatches should be: [0]: "hello world", [1]: "hello", [2]: "world"
+	if len(m0.Submatches) != 3 {
+		t.Fatalf("expected 3 submatches, got %d: %v", len(m0.Submatches), m0.Submatches)
+	}
+
+	check := func(i int, want string) {
+		start, end := m0.Submatches[i][0], m0.Submatches[i][1]
+		got := string(m0.LineBytes[start:end])
+		if got != want {
+			t.Errorf("submatch %d: got %q, want %q", i, got, want)
+		}
+	}
+
+	check(0, "hello world")
+	check(1, "hello")
+	check(2, "world")
+}
+
+func TestSearchSubmatchesPCRE(t *testing.T) {
+	// PCRE with lookahead/lookbehind
+	m, err := pattern.New(pattern.Config{Pattern: `(hello)(?= world)`, Pcre2: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := NewSearcher(nil, Config{}, m)
+
+	path := createTempFile(t, "hello world")
+	result, err := s.Search(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(result.Matches) != 1 {
+		t.Fatalf("expected 1 match, got %d", len(result.Matches))
+	}
+
+	m0 := result.Matches[0]
+	// [0]: "hello", [1]: "hello"
+	if len(m0.Submatches) != 2 {
+		t.Fatalf("expected 2 submatches, got %d: %v", len(m0.Submatches), m0.Submatches)
+	}
+
+	got := string(m0.LineBytes[m0.Submatches[0][0]:m0.Submatches[0][1]])
+	if got != "hello" {
+		t.Errorf("full match: got %q, want %q", got, "hello")
+	}
+	
+	got1 := string(m0.LineBytes[m0.Submatches[1][0]:m0.Submatches[1][1]])
+	if got1 != "hello" {
+		t.Errorf("group 1: got %q, want %q", got1, "hello")
+	}
+}
+
 func BenchmarkSearch(b *testing.B) {
 	// Search the real search.go file for "func" — representative workload
 	m, _ := pattern.New(pattern.Config{Pattern: "func"})

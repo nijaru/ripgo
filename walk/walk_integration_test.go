@@ -97,6 +97,31 @@ func TestWalkerSingleFile(t *testing.T) {
 	}
 }
 
+func TestWalkerExplicitFile(t *testing.T) {
+	root, _ := setupTestDir(t, map[string]string{
+		"a.txt": "1",
+		"b.txt": "2",
+	})
+
+	engine := newTestEngine(t, ignore.Config{NoIgnore: true, Hidden: true})
+	w := NewWalker(nil, Config{}, engine)
+
+	ctx := t.Context()
+	fileCh := make(chan string, 1)
+	filePath := filepath.Join(root, "a.txt")
+
+	go w.Run(ctx, []string{filePath}, fileCh)
+
+	var files []string
+	for f := range fileCh {
+		files = append(files, f)
+	}
+
+	if len(files) != 1 || files[0] != filePath {
+		t.Fatalf("got %v, want [%s]", files, filePath)
+	}
+}
+
 func TestWalkerEmptyDir(t *testing.T) {
 	root := t.TempDir()
 

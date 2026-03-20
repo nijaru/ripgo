@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"regexp"
 	"strings"
+
+	"github.com/dlclark/regexp2"
 )
 
 // Config holds pattern matching options.
@@ -17,34 +19,36 @@ type Config struct {
 	// SmartCase makes matching case-insensitive unless the pattern
 	// contains uppercase characters.
 	SmartCase bool
+	// Pcre2 uses PCRE2-compatible regex engine.
+	Pcre2 bool
 }
 
 // Matcher performs line-oriented matching.
 type Matcher interface {
 	// Match searches for the pattern in a single line.
-	// Returns the byte offsets of the first match and whether one was found.
+	// Returns the byte offsets of the match and all capture groups.
+	// locs[0]:locs[1] is the full match, locs[2]:locs[3] is group 1, etc.
 	// The caller MUST NOT retain the locs slice after the call.
 	Match(line []byte) (locs []int, ok bool)
 	// MatchFile searches the entire file contents for the pattern.
 	MatchFile(data []byte) bool
-	// Name returns the matcher implementation name ("literal" or "regex").
+	// Name returns the matcher implementation name ("literal", "regex", or "pcre").
 	Name() string
 }
 
 // RegexMatcher wraps stdlib regexp for pattern matching.
 // Users should generally create Matchers via New().
 type RegexMatcher struct {
-	re   *regexp.Regexp
-	locs [2]int // reusable locs to avoid allocation
+	re *regexp.Regexp
 }
 
 // Match searches for the pattern in a single line.
 func (m *RegexMatcher) Match(line []byte) (locs []int, ok bool) {
-	loc := m.re.FindIndex(line)
-	if loc == nil {
+	locs = m.re.FindSubmatchIndex(line)
+	if locs == nil {
 		return nil, false
 	}
-	return loc, true
+	return locs, true
 }
 
 // MatchFile searches the entire file contents for the pattern.
@@ -54,6 +58,84 @@ func (m *RegexMatcher) MatchFile(data []byte) bool {
 
 // Name returns "regex".
 func (m *RegexMatcher) Name() string { return "regex" }
+
+// PCREMatcher wraps regexp2 for PCRE2-compatible pattern matching.
+// Users should generally create Matchers via New().
+type PCREMatcher struct {
+	re *regexp2.Regexp
+}
+
+// Match searches for the pattern in a single line.
+func (m *PCREMatcher) Match(line []byte) (locs []int, ok bool) {
+	s := string(line)
+	mt, err := m.re.FindStringMatch(s)
+	if err != nil || mt == nil {
+		return nil, false
+	}
+
+	groups := mt.Groups()
+	locs = make([]int, 0, 2*len(groups))
+
+	// Cache rune offsets for the current line to avoid O(N^2) on multiple groups
+	var runeToByte []int
+
+	for _, g := range groups {
+		if g.Index < 0 {
+			locs = append(locs, -1, -1)
+			continue
+		}
+
+		if runeToByte == nil {
+			runeToByte = make([]int, 0, len(s))
+			for bi := range s {
+				runeToByte = append(runeToByte, bi)
+			}
+			runeToByte = append(runeToByte, len(s))
+		}
+
+		start := runeToByte[g.Index]
+		end := runeToByte[g.Index+g.Length]
+		locs = append(locs, start, end)
+	}
+	return locs, true
+}
+
+// MatchFile searches the entire file contents for the pattern.
+func (m *PCREMatcher) MatchFile(data []byte) bool {
+	ok, err := m.re.MatchRunes([]rune(string(data)))
+	return err == nil && ok
+}
+
+// Name returns "pcre".
+func (m *PCREMatcher) Name() string { return "pcre" }
+
+// newPCREMatcher compiles a PCRE2-compatible matcher.
+func newPCREMatcher(pattern string, ignoreCase bool) (*PCREMatcher, error) {
+	var flags regexp2.RegexOptions
+	if ignoreCase {
+		flags |= regexp2.IgnoreCase
+	}
+	re, err := regexp2.Compile(pattern, flags)
+	if err != nil {
+		return nil, err
+	}
+	return &PCREMatcher{re: re}, nil
+}
+
+// runeToByteOffset converts a rune index to a byte offset in s.
+func runeToByteOffset(s string, runeIdx int) int {
+	if runeIdx <= 0 {
+		return 0
+	}
+	i := 0
+	for bi := range s {
+		if i == runeIdx {
+			return bi
+		}
+		i++
+	}
+	return len(s)
+}
 
 // LiteralMatcher uses byte search for fixed-string matching.
 // It is significantly faster than RegexMatcher for simple patterns.
@@ -116,6 +198,10 @@ func New(cfg Config) (Matcher, error) {
 			pattern:  lit,
 			caseFold: cfg.IgnoreCase,
 		}, nil
+	}
+
+	if cfg.Pcre2 {
+		return newPCREMatcher(pattern, cfg.IgnoreCase)
 	}
 
 	if IsLiteral(pattern) {

@@ -17,7 +17,7 @@ type Printer interface {
 	// PrintResult prints a single file's results.
 	PrintResult(search.Result) error
 	// Finish is called after all results have been printed.
-	Finish(stats.Stats) error
+	Finish(*stats.Stats) error
 }
 
 // TextPrinter outputs results in the default format.
@@ -25,6 +25,7 @@ type TextPrinter struct {
 	w          io.Writer
 	lineNumber bool
 	column     bool
+	heading    bool
 }
 
 // TextConfig holds text printer options.
@@ -35,6 +36,8 @@ type TextConfig struct {
 	LineNumber bool
 	// Column includes column offsets in output.
 	Column bool
+	// Heading shows filename once per group of matches.
+	Heading bool
 }
 
 // NewTextPrinter creates a text printer.
@@ -46,18 +49,23 @@ func NewTextPrinter(cfg TextConfig) *TextPrinter {
 		w:          cfg.Writer,
 		lineNumber: cfg.LineNumber,
 		column:     cfg.Column,
+		heading:    cfg.Heading,
 	}
 }
 
 // PrintResult outputs search results for a single file.
 func (p *TextPrinter) PrintResult(r search.Result) error {
+	if len(r.Matches) == 0 && len(r.Entries) == 0 {
+		return nil
+	}
+
+	if p.heading {
+		fmt.Fprintln(p.w, r.Path)
+	}
+
 	// Use entries if available (context lines), otherwise fall back to matches.
 	if len(r.Entries) > 0 {
 		return p.printEntries(r)
-	}
-
-	if len(r.Matches) == 0 {
-		return nil
 	}
 
 	for _, m := range r.Matches {
@@ -87,6 +95,18 @@ func (p *TextPrinter) printEntries(r search.Result) error {
 
 // printMatchLine prints a line with a match (colon separator).
 func (p *TextPrinter) printMatchLine(path string, line, col int, content string) {
+	if p.heading {
+		switch {
+		case p.lineNumber && p.column:
+			fmt.Fprintf(p.w, "%d:%d:%s\n", line, col, content)
+		case p.lineNumber:
+			fmt.Fprintf(p.w, "%d:%s\n", line, content)
+		default:
+			fmt.Fprintf(p.w, "%s\n", content)
+		}
+		return
+	}
+
 	switch {
 	case p.lineNumber && p.column:
 		fmt.Fprintf(p.w, "%s:%d:%d:%s\n", path, line, col, content)
@@ -99,6 +119,15 @@ func (p *TextPrinter) printMatchLine(path string, line, col int, content string)
 
 // printContextLine prints a context line (dash separator).
 func (p *TextPrinter) printContextLine(path string, line int, content string) {
+	if p.heading {
+		if p.lineNumber {
+			fmt.Fprintf(p.w, "%d-%s\n", line, content)
+		} else {
+			fmt.Fprintf(p.w, "%s\n", content)
+		}
+		return
+	}
+
 	if p.lineNumber {
 		fmt.Fprintf(p.w, "%s-%d-%s\n", path, line, content)
 	} else {
@@ -107,7 +136,7 @@ func (p *TextPrinter) printContextLine(path string, line int, content string) {
 }
 
 // Finish is a no-op for TextPrinter.
-func (p *TextPrinter) Finish(_ stats.Stats) error {
+func (p *TextPrinter) Finish(_ *stats.Stats) error {
 	return nil
 }
 
@@ -131,7 +160,7 @@ func (p *CountPrinter) PrintResult(r search.Result) error {
 }
 
 // Finish is a no-op for CountPrinter.
-func (p *CountPrinter) Finish(_ stats.Stats) error {
+func (p *CountPrinter) Finish(_ *stats.Stats) error {
 	return nil
 }
 
@@ -159,7 +188,7 @@ func (p *FilesPrinter) PrintResult(r search.Result) error {
 }
 
 // Finish is a no-op for FilesPrinter.
-func (p *FilesPrinter) Finish(_ stats.Stats) error {
+func (p *FilesPrinter) Finish(_ *stats.Stats) error {
 	return nil
 }
 
@@ -198,7 +227,7 @@ func (p *JSONPrinter) PrintResult(r search.Result) error {
 }
 
 // Finish writes the closing bracket for the JSON array and flushes.
-func (p *JSONPrinter) Finish(_ stats.Stats) error {
+func (p *JSONPrinter) Finish(_ *stats.Stats) error {
 	if p.first {
 		// No results printed
 		if _, err := p.w.Write([]byte("[]")); err != nil {

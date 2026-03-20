@@ -210,7 +210,7 @@ func TestCountPrinterFinish(t *testing.T) {
 	var buf bytes.Buffer
 	p := NewCountPrinter(&buf)
 
-	if err := p.Finish(stats.Stats{}); err != nil {
+	if err := p.Finish(&stats.Stats{}); err != nil {
 		t.Fatal(err)
 	}
 	if buf.Len() != 0 {
@@ -293,7 +293,7 @@ func TestJSONPrinter(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := p.Finish(stats.Stats{}); err != nil {
+	if err := p.Finish(&stats.Stats{}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -321,7 +321,7 @@ func TestJSONPrinterResultContent(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := p.Finish(stats.Stats{}); err != nil {
+	if err := p.Finish(&stats.Stats{}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -338,11 +338,29 @@ func TestJSONPrinterEmpty(t *testing.T) {
 	var buf bytes.Buffer
 	p := NewJSONPrinter(&buf)
 
-	if err := p.Finish(stats.Stats{}); err != nil {
+	if err := p.Finish(&stats.Stats{}); err != nil {
 		t.Fatal(err)
 	}
 	got := buf.String()
 	if got != "[]" {
 		t.Errorf("expected empty array [], got %q", got)
+	}
+}
+
+func BenchmarkJSONPrinter(b *testing.B) {
+	r := search.Result{
+		Path: "bench.go",
+		Matches: []search.Match{
+			{Line: 1, Column: 5, LineBytes: []byte("func BenchmarkJSONPrinter(b *testing.B) {")},
+		},
+	}
+
+	for b.Loop() {
+		var buf bytes.Buffer
+		p := NewJSONPrinter(&buf)
+		for i := 0; i < 1000; i++ {
+			p.PrintResult(r)
+		}
+		p.Finish(&stats.Stats{})
 	}
 }

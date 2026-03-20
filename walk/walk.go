@@ -4,13 +4,13 @@ package walk
 import (
 	"context"
 	"io/fs"
-	"os"
 	"path/filepath"
 	"runtime"
 	"sync"
 	"sync/atomic"
 
 	"github.com/nijaru/ripgo/ignore"
+	"github.com/nijaru/ripgo/internal/osfs"
 )
 
 // Config holds walker options.
@@ -26,7 +26,7 @@ type Config struct {
 
 // Walker performs parallel directory traversal, emitting file paths.
 type Walker struct {
-	fs           fs.FS
+	fsys         fs.FS
 	cfg          Config
 	ignoreEngine *ignore.Engine
 	workers      int
@@ -35,13 +35,16 @@ type Walker struct {
 // NewWalker creates a walker with the given config and ignore engine.
 // If fsys is nil, it defaults to the local OS filesystem.
 func NewWalker(fsys fs.FS, cfg Config, engine *ignore.Engine) *Walker {
+	if fsys == nil {
+		fsys = osfs.New()
+	}
 	workers := cfg.Threads
 	if workers == 0 {
 		workers = runtime.GOMAXPROCS(0)
 	}
 
 	return &Walker{
-		fs:           fsys,
+		fsys:         fsys,
 		cfg:          cfg,
 		ignoreEngine: engine,
 		workers:      workers,
@@ -60,8 +63,22 @@ func (w *Walker) Run(ctx context.Context, paths []string, fileCh chan<- string) 
 	wg.Add(w.workers)
 
 	for _, p := range paths {
+		p = filepath.ToSlash(filepath.Clean(p))
+
+		info, err := fs.Stat(w.fsys, p)
+		if err == nil && !info.IsDir() {
+			if w.shouldSearch(p) {
+				fileCh <- p
+			}
+			continue
+		}
+
 		pending.Add(1)
-		dirCh <- filepath.ToSlash(filepath.Clean(p))
+		dirCh <- p
+	}
+
+	if pending.Load() == 0 {
+		closeDirOnce.Do(func() { close(dirCh) })
 	}
 
 	for range w.workers {
@@ -91,13 +108,7 @@ func (w *Walker) walkWorker(ctx context.Context, dirCh chan string, fileCh chan<
 				return
 			}
 
-			var entries []fs.DirEntry
-			var err error
-			if w.fs != nil {
-				entries, err = fs.ReadDir(w.fs, dir)
-			} else {
-				entries, err = os.ReadDir(dir)
-			}
+			entries, err := fs.ReadDir(w.fsys, dir)
 			if err != nil {
 				pending.Add(-1)
 				tryClose()
@@ -122,22 +133,23 @@ func (w *Walker) walkWorker(ctx context.Context, dirCh chan string, fileCh chan<
 				}
 
 				if entry.IsDir() {
-				        pending.Add(1)
-				        select {
-				        case <-ctx.Done():
-				                return
-				        case dirCh <- path:
-				        default:
-				                go func(p string) {
-				                        select {
-				                        case <-ctx.Done():
-				                                pending.Add(-1)
-				                                tryClose()
-				                        case dirCh <- p:
-				                        }
-				                }(path)
-				        }
-				} else {					if w.shouldSearch(path) {
+					pending.Add(1)
+					select {
+					case <-ctx.Done():
+						return
+					case dirCh <- path:
+					default:
+						go func(p string) {
+							select {
+							case <-ctx.Done():
+								pending.Add(-1)
+								tryClose()
+							case dirCh <- p:
+							}
+						}(path)
+					}
+				} else {
+					if w.shouldSearch(path) {
 						select {
 						case <-ctx.Done():
 							return
@@ -154,13 +166,7 @@ func (w *Walker) walkWorker(ctx context.Context, dirCh chan string, fileCh chan<
 }
 
 func (w *Walker) shouldSearch(path string) bool {
-	var info fs.FileInfo
-	var err error
-	if w.fs != nil {
-		info, err = fs.Stat(w.fs, path)
-	} else {
-		info, err = os.Stat(path)
-	}
+	info, err := fs.Stat(w.fsys, path)
 	if err != nil {
 		return false
 	}

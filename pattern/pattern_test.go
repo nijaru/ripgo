@@ -141,6 +141,83 @@ func TestSmartCase(t *testing.T) {
 	}
 }
 
+func TestPCREMatcher(t *testing.T) {
+	cfg := Config{Pattern: `(?<=foo)\d+`, Pcre2: true}
+	m, err := New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m.Name() != "pcre" {
+		t.Fatalf("expected pcre matcher, got %s", m.Name())
+	}
+
+	locs, ok := m.Match([]byte("foo123bar"))
+	if !ok {
+		t.Fatal("expected match with lookbehind")
+	}
+	if locs[0] != 3 || locs[1] != 6 {
+		t.Fatalf("expected [3,6], got %v", locs)
+	}
+
+	// lookbehind fails when prefix absent
+	_, ok = m.Match([]byte("bar123foo"))
+	if ok {
+		t.Fatal("expected no match without lookbehind prefix")
+	}
+}
+
+func TestPCREMatcherLookahead(t *testing.T) {
+	cfg := Config{Pattern: `\w+(?=\.)`, Pcre2: true}
+	m, err := New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	locs, ok := m.Match([]byte("file.txt"))
+	if !ok {
+		t.Fatal("expected match with lookahead")
+	}
+	if locs[0] != 0 || locs[1] != 4 {
+		t.Fatalf("expected [0,4], got %v", locs)
+	}
+}
+
+func TestPCREMatcherCaseInsensitive(t *testing.T) {
+	cfg := Config{Pattern: `(?<=foo)\d+`, Pcre2: true, IgnoreCase: true}
+	m, err := New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, ok := m.Match([]byte("FOO123"))
+	if !ok {
+		t.Fatal("expected case-insensitive PCRE match")
+	}
+}
+
+func TestPCREMatcherInvalidPattern(t *testing.T) {
+	cfg := Config{Pattern: `(?P<name`, Pcre2: true}
+	_, err := New(cfg)
+	if err == nil {
+		t.Fatal("expected error for invalid PCRE pattern")
+	}
+}
+
+func TestPCREMatchFile(t *testing.T) {
+	cfg := Config{Pattern: `(?<=start)\s+\w+`, Pcre2: true}
+	m, err := New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if !m.MatchFile([]byte("start hello end")) {
+		t.Fatal("expected MatchFile to find lookbehind match")
+	}
+	if m.MatchFile([]byte("no prefix here")) {
+		t.Fatal("expected MatchFile to return false")
+	}
+}
+
 func BenchmarkPattern(b *testing.B) {
 	lines := [][]byte{
 		[]byte("func main() {"),

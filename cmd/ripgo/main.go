@@ -1,22 +1,22 @@
 package main
 
 import (
-        "context"
-        "io"
-        "os"
-        "os/signal"
-        "strings"
-        "sync"
-	"github.com/alecthomas/kong"
+	"context"
+	"fmt"
+	"io"
+	"os"
+	"os/signal"
+	"slices"
+	"strings"
 
+	"github.com/alecthomas/kong"
+	"github.com/nijaru/ripgo"
 	"github.com/nijaru/ripgo/ignore"
 	"github.com/nijaru/ripgo/internal/cli"
 	"github.com/nijaru/ripgo/internal/config"
-	"github.com/nijaru/ripgo/pattern"
 	"github.com/nijaru/ripgo/printer"
 	"github.com/nijaru/ripgo/search"
 	"github.com/nijaru/ripgo/stats"
-	"github.com/nijaru/ripgo/walk"
 )
 
 func run(ctx context.Context) int {
@@ -25,105 +25,84 @@ func run(ctx context.Context) int {
 
 	cfg, err := config.New(opts)
 	if err != nil {
-	        os.Stderr.WriteString("Error: " + err.Error() + "\n")
-	        return 1
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		return 1
 	}
 
 	if cfg.TypeList {
-	        for t, patterns := range ignore.FileTypes {
-	                os.Stdout.WriteString(t + ": " + strings.Join(patterns, ", ") + "\n")
-	        }
-	        return 0
+		for t, patterns := range ignore.FileTypes {
+			fmt.Printf("%s: %s\n", t, strings.Join(patterns, ", "))
+		}
+		return 0
 	}
 
-	matcher, err := pattern.New(cfg.Pattern)
-
-	if err != nil {
-		os.Stderr.WriteString("Error: " + err.Error() + "\n")
-		return 1
+	// Translate internal/config to ripgo high-level options
+	searchOpts := []ripgo.Option{
+		ripgo.WithThreads(cfg.Threads),
+		ripgo.WithIgnoreCase(cfg.Pattern.IgnoreCase),
+		ripgo.WithFixedStrings(cfg.Pattern.FixedStrings),
+		ripgo.WithPcre2(cfg.Pattern.Pcre2),
+		ripgo.WithContext(cfg.Search.Before, cfg.Search.After),
+		ripgo.WithMaxCount(cfg.Search.MaxCount),
+		ripgo.WithHidden(cfg.Ignore.Hidden),
+		ripgo.WithNoIgnore(cfg.Ignore.NoIgnore),
 	}
-
-	ignoreEngine, err := ignore.NewEngine(cfg.Ignore)
-	if err != nil {
-		os.Stderr.WriteString("Error: " + err.Error() + "\n")
-		return 1
-	}
-
-	w := walk.NewWalker(nil, cfg.Walk, ignoreEngine)
-	searcher := search.NewSearcher(nil, cfg.Search, matcher)
 
 	prn := newPrinter(cfg)
 	var st stats.Stats
+	var results []search.Result
 
-	fileCh := make(chan string, 1024)
-	resultCh := make(chan search.Result, 1024)
-
-	var scanWg sync.WaitGroup
-
-	// walker
-	scanWg.Add(1)
-	go func() {
-		defer scanWg.Done()
-		w.Run(ctx, cfg.Paths, fileCh)
-	}()
-
-	// scanners
-	for range cfg.Threads {
-		scanWg.Add(1)
-		go func() {
-			defer scanWg.Done()
-			for path := range fileCh {
-			        result, err := searcher.Search(path)
-			        if err != nil {
-			                continue
-			        }
-			        // Send if it has matches, or context entries,
-			        // or if it's binary and we're looking for/reporting binary.
-			        hasMatches := len(result.Matches) > 0 || len(result.Entries) > 0
-			        shouldSend := hasMatches
-			        if result.Binary && (cfg.Search.SearchBinary || cfg.Search.OnlyBinary) {
-			                shouldSend = true
-			        }
-
-			        if shouldSend {
-			                select {
-			                case <-ctx.Done():
-			                        return
-			                case resultCh <- result:
-			                }
-			        }
-			}
-
-		}()
-	}
-
-	go func() {
-		scanWg.Wait()
-		close(resultCh)
-	}()
-
-	// printer
-	for result := range resultCh {
-		if err := prn.PrintResult(result); err != nil {
+	// Use the new iterator-based API
+	for res, err := range ripgo.Search(ctx, cfg.Pattern.Pattern, cfg.Paths, searchOpts...) {
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error searching %s: %v\n", res.Path, err)
 			continue
 		}
-		st.RecordMatch(result)
+
+		if cfg.Sort == "" || cfg.Sort == "none" {
+			if err := prn.PrintResult(res); err != nil {
+				continue
+			}
+		} else {
+			results = append(results, res)
+		}
+		st.RecordMatch(res)
 	}
 
-	if err := prn.Finish(st); err != nil {
-		os.Stderr.WriteString("Error: " + err.Error() + "\n")
+	if cfg.Sort != "" && cfg.Sort != "none" {
+		sortResults(results, cfg.Sort)
+		for _, res := range results {
+			if err := prn.PrintResult(res); err != nil {
+				continue
+			}
+		}
 	}
 
-	return exitCode(cfg, st)
+	if err := prn.Finish(&st); err != nil {
+		fmt.Fprintf(os.Stderr, "Error finishing printer: %v\n", err)
+	}
+
+	if st.TotalMatches() > 0 {
+		return 0
+	}
+	return 1
+}
+
+func sortResults(results []search.Result, mode string) {
+	switch mode {
+	case "path":
+		slices.SortFunc(results, func(a, b search.Result) int {
+			return strings.Compare(a.Path, b.Path)
+		})
+	}
 }
 
 func newPrinter(cfg *config.Config) printer.Printer {
-        switch cfg.OutputMode() {
-        case config.OutputJSON:
-                return printer.NewJSONPrinter(os.Stdout)
-        case config.OutputCount:
-                return printer.NewCountPrinter(os.Stdout)
-
+	switch cfg.OutputMode() {
+	case config.OutputJSON:
+		return printer.NewJSONPrinter(os.Stdout)
+	case config.OutputCount:
+		return printer.NewCountPrinter(os.Stdout)
 	case config.OutputFiles:
 		return printer.NewFilesPrinter(os.Stdout)
 	case config.OutputQuiet:
@@ -133,22 +112,16 @@ func newPrinter(cfg *config.Config) printer.Printer {
 			Writer:     os.Stdout,
 			LineNumber: cfg.LineNumber,
 			Column:     cfg.Column,
+			Heading:    cfg.Heading,
 		})
 	}
-}
-
-func exitCode(cfg *config.Config, st stats.Stats) int {
-	if st.TotalMatches() > 0 {
-		return 0
-	}
-	return 1
 }
 
 // discardPrinter silently consumes results (for -q / --quiet).
 type discardPrinter struct{}
 
 func (discardPrinter) PrintResult(search.Result) error { return nil }
-func (discardPrinter) Finish(stats.Stats) error        { return nil }
+func (discardPrinter) Finish(*stats.Stats) error       { return nil }
 
 var _ printer.Printer = discardPrinter{}
 var _ io.Writer = discardPrinter{}
