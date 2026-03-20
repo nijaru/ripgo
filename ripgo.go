@@ -42,7 +42,9 @@ func Search(ctx context.Context, patternStr string, paths []string, opts ...Opti
 
 		fsys := cfg.FS
 		if fsys == nil {
-			fsys = osfs.New()
+			osfsys := osfs.New()
+			fsys = osfsys
+			defer osfsys.Close()
 		}
 
 		engine, err := ignore.NewEngineFS(fsys, cfg.Ignore)
@@ -81,7 +83,7 @@ func Search(ctx context.Context, patternStr string, paths []string, opts ...Opti
 			go func() {
 				defer scanWg.Done()
 				for entry := range fileCh {
-					res, err := s.Search(entry.Path, entry.Info)
+					res, err := s.Search(entry.File)
 					if err != nil {
 						res.Error = err
 						// We emit the error but keep searching other files

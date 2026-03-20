@@ -10,8 +10,13 @@ import (
 	"sync/atomic"
 
 	"github.com/nijaru/ripgo/ignore"
+	"github.com/nijaru/ripgo/internal/fsref"
 	"github.com/nijaru/ripgo/internal/osfs"
 )
+
+type rootProvider interface {
+	OpenRoot(dir string) (*fsref.Root, error)
+}
 
 // Config holds walker options.
 type Config struct {
@@ -28,6 +33,7 @@ type Config struct {
 type Entry struct {
 	Path string
 	Info fs.FileInfo
+	File fsref.Ref
 }
 
 // Walker performs parallel directory traversal, emitting file entries.
@@ -74,7 +80,21 @@ func (w *Walker) Run(ctx context.Context, paths []string, fileCh chan<- Entry) {
 		info, err := fs.Stat(w.fsys, p)
 		if err == nil && !info.IsDir() {
 			if w.shouldSearch(p, info) {
-				fileCh <- Entry{Path: p, Info: info}
+				var ref fsref.Ref
+				dir := filepath.Dir(p)
+				base := filepath.Base(p)
+
+				if rp, ok := w.fsys.(rootProvider); ok {
+					if root, err := rp.OpenRoot(dir); err == nil {
+
+						ref = fsref.NewRootedRef(root, base, p, info)
+					}
+				}
+
+				if ref == nil {
+					ref = fsref.NewPathRef(p, info, w.fsys)
+				}
+				fileCh <- Entry{Path: p, Info: info, File: ref}
 			}
 			continue
 		}
@@ -121,6 +141,12 @@ func (w *Walker) walkWorker(ctx context.Context, dirCh chan string, fileCh chan<
 				continue
 			}
 
+			var root *fsref.Root
+			if rp, ok := w.fsys.(rootProvider); ok {
+				// We ignore error here and fall back to pathRef
+				root, _ = rp.OpenRoot(dir)
+			}
+
 			w.ignoreEngine.LoadIgnoreFile(dir)
 
 			for _, entry := range entries {
@@ -157,10 +183,17 @@ func (w *Walker) walkWorker(ctx context.Context, dirCh chan string, fileCh chan<
 				} else {
 					info, err := entry.Info()
 					if err == nil && w.shouldSearch(path, info) {
+						var ref fsref.Ref
+						if root != nil {
+							ref = fsref.NewRootedRef(root, name, path, info)
+						} else {
+							ref = fsref.NewPathRef(path, info, w.fsys)
+						}
+
 						select {
 						case <-ctx.Done():
 							return
-						case fileCh <- Entry{Path: path, Info: info}:
+						case fileCh <- Entry{Path: path, Info: info, File: ref}:
 						}
 					}
 				}

@@ -45,7 +45,13 @@ type RegexMatcher struct {
 	re *regexp.Regexp
 }
 
-func (m *RegexMatcher) Literal() []byte { return nil }
+func (m *RegexMatcher) Literal() []byte {
+	prefix, _ := m.re.LiteralPrefix()
+	if prefix != "" {
+		return []byte(prefix)
+	}
+	return nil
+}
 
 // Match searches for the pattern in a single line.
 func (m *RegexMatcher) Match(line []byte) (locs []int, ok bool) {
@@ -67,7 +73,8 @@ func (m *RegexMatcher) Name() string { return "regex" }
 // PCREMatcher wraps regexp2 for PCRE2-compatible pattern matching.
 // Users should generally create Matchers via New().
 type PCREMatcher struct {
-	re *regexp2.Regexp
+	re      *regexp2.Regexp
+	pattern string
 }
 
 // Match searches for the pattern in a single line.
@@ -114,7 +121,23 @@ func (m *PCREMatcher) MatchFile(data []byte) bool {
 // Name returns "pcre".
 func (m *PCREMatcher) Name() string { return "pcre" }
 
-func (m *PCREMatcher) Literal() []byte { return nil }
+func (m *PCREMatcher) Literal() []byte {
+	// PCRE patterns often start with (?flags). If so, we can't easily extract a literal prefix
+	// that respects those flags without complex parsing.
+	if strings.HasPrefix(m.pattern, "(?") {
+		return nil
+	}
+	// Simple prefix extraction: take all characters until the first meta-character.
+	for i, r := range m.pattern {
+		if strings.ContainsRune(".*+?^${}[]|()\\", r) {
+			if i > 0 {
+				return []byte(m.pattern[:i])
+			}
+			return nil
+		}
+	}
+	return []byte(m.pattern)
+}
 
 // newPCREMatcher compiles a PCRE2-compatible matcher.
 func newPCREMatcher(pattern string, ignoreCase bool) (*PCREMatcher, error) {
@@ -126,7 +149,7 @@ func newPCREMatcher(pattern string, ignoreCase bool) (*PCREMatcher, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &PCREMatcher{re: re}, nil
+	return &PCREMatcher{re: re, pattern: pattern}, nil
 }
 
 // runeToByteOffset converts a rune index to a byte offset in s.

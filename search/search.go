@@ -5,6 +5,7 @@ import (
 	"io/fs"
 	"sync"
 
+	"github.com/nijaru/ripgo/internal/fsref"
 	"github.com/nijaru/ripgo/internal/osfs"
 	"github.com/nijaru/ripgo/pattern"
 )
@@ -115,9 +116,15 @@ func NewSearcher(fsys fs.FS, cfg Config, matcher pattern.Matcher) *Searcher {
 	}
 }
 
-// Search reads a file and returns all matches.
-// If info is provided, it uses it to avoid a redundant Stat for mmap decisions.
-func (s *Searcher) Search(path string, info fs.FileInfo) (Result, error) {
+// SearchPath is a compatibility shim that creates a pathRef and calls Search.
+func (s *Searcher) SearchPath(path string, info fs.FileInfo) (Result, error) {
+	ref := fsref.NewPathRef(path, info, s.fsys)
+	return s.Search(ref)
+}
+
+// Search reads a file via the provided Ref and returns all matches.
+func (s *Searcher) Search(ref fsref.Ref) (Result, error) {
+	path := ref.DisplayPath()
 	result := Result{Path: path}
 
 	var data []byte
@@ -125,27 +132,18 @@ func (s *Searcher) Search(path string, info fs.FileInfo) (Result, error) {
 	var mapped bool
 	var unmap func() error
 
-	// Try memory mapping if supported
-	if mfs, ok := s.fsys.(MappableFS); ok {
-		if info == nil {
-			info, _ = fs.Stat(s.fsys, path)
-		}
-		// Lower threshold to 128KB to reduce syscall overhead for medium files.
-		if info != nil && info.Size() > 128*1024 {
-			data, unmap, err = mfs.Mmap(path)
-			if err == nil {
-				mapped = true
-				defer unmap()
-			}
+	info := ref.Info()
+	// Lower threshold to 128KB to reduce syscall overhead for medium files.
+	if info != nil && info.Size() > 128*1024 {
+		data, unmap, err = ref.Mmap()
+		if err == nil {
+			mapped = true
+			defer unmap()
 		}
 	}
 
 	if !mapped {
-		if rfs, ok := s.fsys.(fs.ReadFileFS); ok {
-			data, err = rfs.ReadFile(path)
-		} else {
-			data, err = fs.ReadFile(s.fsys, path)
-		}
+		data, err = ref.ReadFile()
 		if err != nil {
 			return result, err
 		}
@@ -176,20 +174,8 @@ func (s *Searcher) Search(path string, info fs.FileInfo) (Result, error) {
 	result.Matches = make([]Match, 0, 16)
 
 	lineNum := 1
-	remaining := data
-	var line []byte
-
-	for {
-		idx := bytes.IndexByte(remaining, '\n')
-		if idx == -1 {
-			if len(remaining) > 0 {
-				line = remaining
-			} else {
-				break
-			}
-		} else {
-			line = remaining[:idx]
-		}
+	for line := range bytes.Lines(data) {
+		line = bytes.TrimSuffix(line, []byte("\n"))
 
 		if needContext {
 			lines = append(lines, line)
@@ -238,10 +224,6 @@ func (s *Searcher) Search(path string, info fs.FileInfo) (Result, error) {
 			}
 		}
 
-		if idx == -1 {
-			break
-		}
-		remaining = remaining[idx+1:]
 		lineNum++
 	}
 
@@ -332,20 +314,19 @@ func (s *Searcher) SearchMultiline(path string) (Result, error) {
 	}
 
 	if s.matcher.MatchFile(data) {
-		lines := bytes.Split(data, []byte("\n"))
-		if len(lines) > 0 && len(lines[len(lines)-1]) == 0 {
-			lines = lines[:len(lines)-1]
-		}
-		for i, line := range lines {
+		lineNum := 1
+		for line := range bytes.Lines(data) {
+			line = bytes.TrimSuffix(line, []byte("\n"))
 			if _, ok := s.matcher.Match(line); ok {
 				match := Match{
-					Line:       i + 1,
+					Line:       lineNum,
 					Column:     1,
 					LineBytes:  bytes.Clone(line),
 					Submatches: [][2]int{{0, len(line)}},
 				}
 				result.Matches = append(result.Matches, match)
 			}
+			lineNum++
 		}
 	}
 

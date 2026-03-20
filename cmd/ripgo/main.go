@@ -82,10 +82,7 @@ func run(ctx context.Context) int {
 		fmt.Fprintf(os.Stderr, "Error finishing printer: %v\n", err)
 	}
 
-	if st.TotalMatches() > 0 {
-		return 0
-	}
-	return 1
+	return 0
 }
 
 func sortResults(results []search.Result, mode string) {
