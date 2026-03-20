@@ -31,8 +31,6 @@ type Config struct {
 
 // Entry represents a file found during traversal.
 type Entry struct {
-	Path string
-	Info fs.FileInfo
 	File fsref.Ref
 }
 
@@ -94,7 +92,7 @@ func (w *Walker) Run(ctx context.Context, paths []string, fileCh chan<- Entry) {
 				if ref == nil {
 					ref = fsref.NewPathRef(p, info, w.fsys)
 				}
-				fileCh <- Entry{Path: p, Info: info, File: ref}
+				fileCh <- Entry{File: ref}
 			}
 			continue
 		}
@@ -193,7 +191,7 @@ func (w *Walker) walkWorker(ctx context.Context, dirCh chan string, fileCh chan<
 						select {
 						case <-ctx.Done():
 							return
-						case fileCh <- Entry{Path: path, Info: info, File: ref}:
+						case fileCh <- Entry{File: ref}:
 						}
 					}
 				}

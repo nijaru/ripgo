@@ -47,7 +47,7 @@ func collectFiles(t *testing.T, w *Walker, root string) []string {
 
 	var files []string
 	for e := range fileCh {
-		rel, err := filepath.Rel(root, e.Path)
+		rel, err := filepath.Rel(root, e.File.DisplayPath())
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -114,7 +114,7 @@ func TestWalkerExplicitFile(t *testing.T) {
 
 	var files []string
 	for e := range fileCh {
-		files = append(files, e.Path)
+		files = append(files, e.File.DisplayPath())
 	}
 
 	if len(files) != 1 || files[0] != filePath {
@@ -267,7 +267,7 @@ func TestWalkerMultipleRoots(t *testing.T) {
 	var files []string
 	for e := range fileCh {
 		// Normalize: just get the basename since roots differ
-		files = append(files, filepath.Base(e.Path))
+		files = append(files, filepath.Base(e.File.DisplayPath()))
 	}
 	sort.Strings(files)
 
