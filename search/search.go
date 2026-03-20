@@ -9,6 +9,7 @@ import (
 	"github.com/nijaru/ripgo/internal/aho"
 	"github.com/nijaru/ripgo/internal/fsref"
 	"github.com/nijaru/ripgo/internal/osfs"
+	"github.com/nijaru/ripgo/internal/sys"
 	"github.com/nijaru/ripgo/pattern"
 )
 
@@ -60,6 +61,10 @@ type Result struct {
 	Binary bool
 	// ModTime is the file's last modification time.
 	ModTime time.Time
+	// CreatedAt is the file's birth time (creation time).
+	CreatedAt time.Time
+	// AccessedAt is the file's last access time.
+	AccessedAt time.Time
 	// Error is any error encountered while searching this file.
 	Error error
 }
@@ -143,7 +148,10 @@ func (s *Searcher) Search(ref fsref.Ref) (Result, error) {
 
 	info := ref.Info()
 	if info != nil {
-		result.ModTime = info.ModTime()
+		stats := sys.GetStats(info)
+		result.ModTime = stats.ModifiedAt
+		result.CreatedAt = stats.CreatedAt
+		result.AccessedAt = stats.AccessedAt
 	}
 	// Lower threshold to 128KB to reduce syscall overhead for medium files.
 	if info != nil && info.Size() > 128*1024 {

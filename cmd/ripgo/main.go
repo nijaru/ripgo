@@ -100,14 +100,12 @@ func sortResults(results []search.Result, mode string) {
 			return a.ModTime.Compare(b.ModTime)
 		})
 	case "created":
-		// Go's fs.FileInfo doesn't expose birth time; fall back to modification time.
 		slices.SortFunc(results, func(a, b search.Result) int {
-			return a.ModTime.Compare(b.ModTime)
+			return a.CreatedAt.Compare(b.CreatedAt)
 		})
 	case "accessed":
-		// Go's fs.FileInfo doesn't expose access time portably; fall back to modification time.
 		slices.SortFunc(results, func(a, b search.Result) int {
-			return a.ModTime.Compare(b.ModTime)
+			return a.AccessedAt.Compare(b.AccessedAt)
 		})
 	}
 }
