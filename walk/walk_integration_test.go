@@ -41,13 +41,13 @@ func newTestEngine(t *testing.T, cfg ignore.Config) *ignore.Engine {
 func collectFiles(t *testing.T, w *Walker, root string) []string {
 	t.Helper()
 	ctx := t.Context()
-	fileCh := make(chan string, 256)
+	fileCh := make(chan Entry, 256)
 
 	go w.Run(ctx, []string{root}, fileCh)
 
 	var files []string
-	for f := range fileCh {
-		rel, err := filepath.Rel(root, f)
+	for e := range fileCh {
+		rel, err := filepath.Rel(root, e.Path)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -107,14 +107,14 @@ func TestWalkerExplicitFile(t *testing.T) {
 	w := NewWalker(nil, Config{}, engine)
 
 	ctx := t.Context()
-	fileCh := make(chan string, 1)
+	fileCh := make(chan Entry, 1)
 	filePath := filepath.Join(root, "a.txt")
 
 	go w.Run(ctx, []string{filePath}, fileCh)
 
 	var files []string
-	for f := range fileCh {
-		files = append(files, f)
+	for e := range fileCh {
+		files = append(files, e.Path)
 	}
 
 	if len(files) != 1 || files[0] != filePath {
@@ -240,7 +240,7 @@ func TestWalkerContextCancel(t *testing.T) {
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel() // cancel immediately
 
-	fileCh := make(chan string, 256)
+	fileCh := make(chan Entry, 256)
 	w.Run(ctx, []string{root}, fileCh)
 
 	// Should close without hanging; files may or may not be emitted
@@ -261,13 +261,13 @@ func TestWalkerMultipleRoots(t *testing.T) {
 	w := NewWalker(nil, Config{}, engine)
 
 	ctx := t.Context()
-	fileCh := make(chan string, 256)
+	fileCh := make(chan Entry, 256)
 	go w.Run(ctx, []string{dir1, dir2}, fileCh)
 
 	var files []string
-	for f := range fileCh {
+	for e := range fileCh {
 		// Normalize: just get the basename since roots differ
-		files = append(files, filepath.Base(f))
+		files = append(files, filepath.Base(e.Path))
 	}
 	sort.Strings(files)
 

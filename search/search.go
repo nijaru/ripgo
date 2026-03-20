@@ -3,6 +3,7 @@ package search
 import (
 	"bytes"
 	"io/fs"
+	"sync"
 
 	"github.com/nijaru/ripgo/internal/osfs"
 	"github.com/nijaru/ripgo/pattern"
@@ -72,10 +73,26 @@ type Config struct {
 	OnlyBinary bool
 }
 
+// Release returns pooled resources to the searcher.
+func (r *Result) Release() {
+	for i := range r.Matches {
+		if r.Matches[i].Submatches != nil {
+			submatchPool.Put(r.Matches[i].Submatches[:0])
+			r.Matches[i].Submatches = nil
+		}
+	}
+}
+
 // MappableFS is an optional interface for filesystems that support mmap.
 type MappableFS interface {
 	fs.FS
 	Mmap(name string) ([]byte, func() error, error)
+}
+
+var submatchPool = sync.Pool{
+	New: func() any {
+		return make([][2]int, 0, 16)
+	},
 }
 
 // Searcher scans files for matches against a compiled pattern.
@@ -99,7 +116,8 @@ func NewSearcher(fsys fs.FS, cfg Config, matcher pattern.Matcher) *Searcher {
 }
 
 // Search reads a file and returns all matches.
-func (s *Searcher) Search(path string) (Result, error) {
+// If info is provided, it uses it to avoid a redundant Stat for mmap decisions.
+func (s *Searcher) Search(path string, info fs.FileInfo) (Result, error) {
 	result := Result{Path: path}
 
 	var data []byte
@@ -109,8 +127,10 @@ func (s *Searcher) Search(path string) (Result, error) {
 
 	// Try memory mapping if supported
 	if mfs, ok := s.fsys.(MappableFS); ok {
-		info, err := fs.Stat(s.fsys, path)
-		if err == nil && info.Size() > 1024*1024 {
+		if info == nil {
+			info, _ = fs.Stat(s.fsys, path)
+		}
+		if info != nil && info.Size() > 1024*1024 {
 			data, unmap, err = mfs.Mmap(path)
 			if err == nil {
 				mapped = true
@@ -182,7 +202,7 @@ func (s *Searcher) Search(path string) (Result, error) {
 					content = bytes.Clone(line)
 				}
 
-				submatches := make([][2]int, 0, len(locs)/2)
+				submatches := submatchPool.Get().([][2]int)
 				for i := 0; i < len(locs); i += 2 {
 					if locs[i] >= 0 {
 						submatches = append(submatches, [2]int{locs[i], locs[i+1]})

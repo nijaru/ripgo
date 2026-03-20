@@ -270,6 +270,32 @@ func TestFilesPrinterNoMatches(t *testing.T) {
 
 // --- JSONPrinter ---
 
+func TestTextPrinterColor(t *testing.T) {
+	var buf bytes.Buffer
+	p := NewTextPrinter(TextConfig{Writer: &buf, Color: true})
+
+	r := search.Result{
+		Path: "test.go",
+		Matches: []search.Match{
+			{
+				Line:       1,
+				Column:     1,
+				LineBytes:  []byte("match"),
+				Submatches: [][2]int{{0, 5}},
+			},
+		},
+	}
+	if err := p.PrintResult(r); err != nil {
+		t.Fatal(err)
+	}
+	got := buf.String()
+	// Magenta path, Cyan separator, Bold Red match
+	want := "\033[35mtest.go\033[0m\033[36m:\033[0m\033[1;31mmatch\033[0m\n"
+	if got != want {
+		t.Errorf("got %q, want %q", got, want)
+	}
+}
+
 func TestJSONPrinter(t *testing.T) {
 	var buf bytes.Buffer
 	p := NewJSONPrinter(&buf)

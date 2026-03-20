@@ -27,10 +27,17 @@ func Search(ctx context.Context, patternStr string, paths []string, opts ...Opti
 	}
 
 	return func(yield func(search.Result, error) bool) {
-		matcher, err := pattern.New(cfg.Pattern)
-		if err != nil {
-			yield(search.Result{}, err)
-			return
+		var matcher pattern.Matcher
+		var err error
+		
+		if cfg.Matcher != nil {
+			matcher = cfg.Matcher
+		} else {
+			matcher, err = pattern.New(cfg.Pattern)
+			if err != nil {
+				yield(search.Result{}, err)
+				return
+			}
 		}
 
 		fsys := cfg.FS
@@ -47,7 +54,7 @@ func Search(ctx context.Context, patternStr string, paths []string, opts ...Opti
 		w := walk.NewWalker(fsys, cfg.Walk, engine)
 		s := search.NewSearcher(fsys, cfg.Search, matcher)
 
-		fileCh := make(chan string, 1024)
+		fileCh := make(chan walk.Entry, 1024)
 		resultCh := make(chan search.Result, 1024)
 
 		// Context cancellation management
@@ -73,8 +80,8 @@ func Search(ctx context.Context, patternStr string, paths []string, opts ...Opti
 			scanWg.Add(1)
 			go func() {
 				defer scanWg.Done()
-				for path := range fileCh {
-					res, err := s.Search(path)
+				for entry := range fileCh {
+					res, err := s.Search(entry.Path, entry.Info)
 					if err != nil {
 						res.Error = err
 						// We emit the error but keep searching other files
@@ -108,8 +115,10 @@ func Search(ctx context.Context, patternStr string, paths []string, opts ...Opti
 					return
 				}
 				if !yield(res, res.Error) {
+					res.Release()
 					return // Caller stopped iterating
 				}
+				res.Release()
 			}
 		}
 	}
@@ -122,6 +131,7 @@ type Config struct {
 	Walk    walk.Config
 	Ignore  ignore.Config
 	FS      fs.FS
+	Matcher pattern.Matcher
 }
 
 // Option is a functional option for configuring the search.
@@ -176,4 +186,8 @@ func WithHidden(v bool) Option {
 
 func WithNoIgnore(v bool) Option {
 	return func(c *Config) { c.Ignore.NoIgnore = v }
+}
+
+func WithMatcher(m pattern.Matcher) Option {
+	return func(c *Config) { c.Matcher = m }
 }

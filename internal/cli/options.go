@@ -31,6 +31,7 @@ type Options struct {
 	Json             bool     `name:"json" help:"JSON output"`
 	Multiline        bool     `short:"U" help:"Multiline search"`
 	Heading          bool     `name:"heading" default:"false" negatable:"" help:"Show filename once per group of matches"`
+	Color            string   `name:"color" default:"auto" enum:"always,never,auto" help:"Control color output (always, never, auto)"`
 	Sort             string   `name:"sort" help:"Sort results (path, modified, accessed, created, none) (default: none)"`
 	Threads          int      `short:"j" help:"Number of worker threads (default: auto)"`
 	Version          bool     `short:"v" help:"Show version"`

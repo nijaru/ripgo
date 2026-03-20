@@ -1,6 +1,8 @@
 package config
 
 import (
+	"io/fs"
+	"os"
 	"runtime"
 	"strconv"
 	"strings"
@@ -8,9 +10,11 @@ import (
 
 	"github.com/nijaru/ripgo/ignore"
 	"github.com/nijaru/ripgo/internal/cli"
+	"github.com/nijaru/ripgo/internal/osfs"
 	"github.com/nijaru/ripgo/pattern"
 	"github.com/nijaru/ripgo/search"
 	"github.com/nijaru/ripgo/walk"
+	"golang.org/x/term"
 )
 
 // Config holds all validated runtime configuration, translating CLI flags
@@ -28,9 +32,11 @@ type Config struct {
 	Quiet            bool
 	Json             bool
 	Heading          bool
+	Color            bool
 	Sort             string
 	TypeList         bool
 	Threads          int
+	FS               fs.FS
 }
 
 // OutputMode returns the selected output mode.
@@ -61,9 +67,26 @@ const (
 
 // New translates CLI options into validated library configs.
 func New(opts cli.Options) (*Config, error) {
+	isTTY := term.IsTerminal(int(os.Stdout.Fd()))
+
 	paths := opts.Paths
 	if len(paths) == 0 {
 		paths = []string{"."}
+	}
+
+	heading := opts.Heading
+	if !heading && isTTY && !opts.Json && !opts.Count && !opts.FilesWithMatches {
+		heading = true
+	}
+
+	useColor := false
+	switch opts.Color {
+	case "always":
+		useColor = true
+	case "never":
+		useColor = false
+	case "auto":
+		useColor = isTTY
 	}
 
 	pcfg := pattern.Config{
@@ -127,10 +150,12 @@ func New(opts cli.Options) (*Config, error) {
 		FilesWithMatches: opts.FilesWithMatches,
 		Quiet:            opts.Quiet,
 		Json:             opts.Json,
-		Heading:          opts.Heading,
+		Heading:          heading,
+		Color:            useColor,
 		Sort:             opts.Sort,
 		TypeList:         opts.TypeList,
 		Threads:          threads,
+		FS:               osfs.New(),
 	}, nil
 }
 

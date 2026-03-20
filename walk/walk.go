@@ -24,7 +24,13 @@ type Config struct {
 	MaxFileSize int64
 }
 
-// Walker performs parallel directory traversal, emitting file paths.
+// Entry represents a file found during traversal.
+type Entry struct {
+	Path string
+	Info fs.FileInfo
+}
+
+// Walker performs parallel directory traversal, emitting file entries.
 type Walker struct {
 	fsys         fs.FS
 	cfg          Config
@@ -51,9 +57,9 @@ func NewWalker(fsys fs.FS, cfg Config, engine *ignore.Engine) *Walker {
 	}
 }
 
-// Run walks paths and sends file paths to fileCh.
+// Run walks paths and sends file entries to fileCh.
 // fileCh is closed when all work is done.
-func (w *Walker) Run(ctx context.Context, paths []string, fileCh chan<- string) {
+func (w *Walker) Run(ctx context.Context, paths []string, fileCh chan<- Entry) {
 	var pending atomic.Int32
 	var closeDirOnce sync.Once
 
@@ -67,8 +73,8 @@ func (w *Walker) Run(ctx context.Context, paths []string, fileCh chan<- string) 
 
 		info, err := fs.Stat(w.fsys, p)
 		if err == nil && !info.IsDir() {
-			if w.shouldSearch(p) {
-				fileCh <- p
+			if w.shouldSearch(p, info) {
+				fileCh <- Entry{Path: p, Info: info}
 			}
 			continue
 		}
@@ -92,7 +98,7 @@ func (w *Walker) Run(ctx context.Context, paths []string, fileCh chan<- string) 
 	close(fileCh)
 }
 
-func (w *Walker) walkWorker(ctx context.Context, dirCh chan string, fileCh chan<- string, pending *atomic.Int32, closeDirOnce *sync.Once) {
+func (w *Walker) walkWorker(ctx context.Context, dirCh chan string, fileCh chan<- Entry, pending *atomic.Int32, closeDirOnce *sync.Once) {
 	tryClose := func() {
 		if pending.Load() == 0 {
 			closeDirOnce.Do(func() { close(dirCh) })
@@ -149,11 +155,12 @@ func (w *Walker) walkWorker(ctx context.Context, dirCh chan string, fileCh chan<
 						}(path)
 					}
 				} else {
-					if w.shouldSearch(path) {
+					info, err := entry.Info()
+					if err == nil && w.shouldSearch(path, info) {
 						select {
 						case <-ctx.Done():
 							return
-						case fileCh <- path:
+						case fileCh <- Entry{Path: path, Info: info}:
 						}
 					}
 				}
@@ -165,12 +172,7 @@ func (w *Walker) walkWorker(ctx context.Context, dirCh chan string, fileCh chan<
 	}
 }
 
-func (w *Walker) shouldSearch(path string) bool {
-	info, err := fs.Stat(w.fsys, path)
-	if err != nil {
-		return false
-	}
-
+func (w *Walker) shouldSearch(path string, info fs.FileInfo) bool {
 	if w.cfg.MaxFileSize > 0 && info.Size() > w.cfg.MaxFileSize {
 		return false
 	}

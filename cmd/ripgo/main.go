@@ -38,16 +38,16 @@ func run(ctx context.Context) int {
 
 	// Translate internal/config to ripgo high-level options
 	searchOpts := []ripgo.Option{
-		ripgo.WithThreads(cfg.Threads),
-		ripgo.WithIgnoreCase(cfg.Pattern.IgnoreCase),
-		ripgo.WithFixedStrings(cfg.Pattern.FixedStrings),
-		ripgo.WithPcre2(cfg.Pattern.Pcre2),
-		ripgo.WithContext(cfg.Search.Before, cfg.Search.After),
-		ripgo.WithMaxCount(cfg.Search.MaxCount),
-		ripgo.WithHidden(cfg.Ignore.Hidden),
-		ripgo.WithNoIgnore(cfg.Ignore.NoIgnore),
+	        ripgo.WithThreads(cfg.Threads),
+	        ripgo.WithFS(cfg.FS),
+	        ripgo.WithIgnoreCase(cfg.Pattern.IgnoreCase),
+	        ripgo.WithFixedStrings(cfg.Pattern.FixedStrings),
+	        ripgo.WithPcre2(cfg.Pattern.Pcre2),
+	        ripgo.WithContext(cfg.Search.Before, cfg.Search.After),
+	        ripgo.WithMaxCount(cfg.Search.MaxCount),
+	        ripgo.WithHidden(cfg.Ignore.Hidden),
+	        ripgo.WithNoIgnore(cfg.Ignore.NoIgnore),
 	}
-
 	prn := newPrinter(cfg)
 	var st stats.Stats
 	var results []search.Result
@@ -113,10 +113,10 @@ func newPrinter(cfg *config.Config) printer.Printer {
 			LineNumber: cfg.LineNumber,
 			Column:     cfg.Column,
 			Heading:    cfg.Heading,
+			Color:      cfg.Color,
 		})
 	}
-}
-
+	}
 // discardPrinter silently consumes results (for -q / --quiet).
 type discardPrinter struct{}
 

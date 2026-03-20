@@ -290,6 +290,16 @@ func (s *IgnoreSet) matchRules(relPath string, isDir bool) (ignored bool, matche
 	return
 }
 
+// Node is a trie node for directory-based ignore set lookups.
+type Node struct {
+	Children map[string]*Node
+	Set      *IgnoreSet
+}
+
+func newNode() *Node {
+	return &Node{Children: make(map[string]*Node)}
+}
+
 // Engine manages ignore rules and glob filters for file traversal.
 type Engine struct {
 	fs           fs.FS
@@ -298,7 +308,7 @@ type Engine struct {
 	excludes     []glob.Glob
 	typeIncludes []glob.Glob
 	typeExcludes []glob.Glob
-	sets         map[string]*IgnoreSet
+	root         *Node
 	mu           sync.RWMutex
 	baseRelSlash string // path from cwd, forward-slash form (cached for ShouldIgnore)
 }
@@ -313,7 +323,7 @@ func NewEngineFS(fsys fs.FS, cfg Config) (*Engine, error) {
 	engine := &Engine{
 		fs:       fsys,
 		cfg:      cfg,
-		sets:     make(map[string]*IgnoreSet),
+		root:     newNode(),
 		includes: make([]glob.Glob, 0, len(cfg.GlobIncludes)),
 		excludes: make([]glob.Glob, 0, len(cfg.GlobExcludes)),
 	}
@@ -424,60 +434,101 @@ func parseIgnoreLines(content, source string) []IgnoreRule {
 }
 
 // LoadIgnoreFile reads .gitignore and .ignore files from the given directory.
-// It links the resulting IgnoreSet to the parent directory's chain.
 func (e *Engine) LoadIgnoreFile(dir string) error {
-        if e.cfg.NoIgnore {
-                return nil
-        }
+	if e.cfg.NoIgnore {
+		return nil
+	}
 
-        dir = filepath.ToSlash(filepath.Clean(dir))
+	dir = filepath.ToSlash(filepath.Clean(dir))
 
-        e.mu.RLock()
-        _, loaded := e.sets[dir]
-        e.mu.RUnlock()
-        if loaded {
-                return nil
-        }
+	e.mu.RLock()
+	existing := e.lookup(dir)
+	e.mu.RUnlock()
+	if existing != nil && existing.Dir == dir {
+		return nil
+	}
 
-        var rules []IgnoreRule
-        for _, name := range []string{".gitignore", ".ignore"} {
-                var data []byte
-                var err error
-                if e.fs != nil {
-                        data, err = fs.ReadFile(e.fs, filepath.Join(dir, name))
-                } else {
-                        data, err = os.ReadFile(filepath.Join(dir, name))
-                }
-                if err != nil {
-                        continue
-                }
-                source := filepath.Join(dir, name)
-                rules = append(rules, parseIgnoreLines(string(data), source)...)
-        }
+	var rules []IgnoreRule
+	for _, name := range []string{".gitignore", ".ignore"} {
+		var data []byte
+		var err error
+		if e.fs != nil {
+			data, err = fs.ReadFile(e.fs, filepath.Join(dir, name))
+		} else {
+			data, err = os.ReadFile(filepath.Join(dir, name))
+		}
+		if err != nil {
+			continue
+		}
+		source := filepath.Join(dir, name)
+		rules = append(rules, parseIgnoreLines(string(data), source)...)
+	}
 
-        e.mu.Lock()
-        defer e.mu.Unlock()
+	e.mu.Lock()
+	defer e.mu.Unlock()
 
-        // Re-check after acquiring write lock
-        if _, ok := e.sets[dir]; ok {
-                return nil
-        }
+	// Re-check after acquiring write lock
+	if existing := e.lookup(dir); existing != nil && existing.Dir == dir {
+		return nil
+	}
 
-        set := &IgnoreSet{
-                Dir:   dir,
-                Rules: rules,
-        }
+	set := &IgnoreSet{
+		Dir:   dir,
+		Rules: rules,
+	}
 
-        // Link to parent chain
-        if parentDir := filepath.Dir(dir); parentDir != dir {
-                if parentSet, ok := e.sets[parentDir]; ok {
-                        set.Parent = parentSet
-                }
-        }
+	// Link to parent chain
+	parentSet := e.lookup(filepath.Dir(dir))
+	if parentSet != nil {
+		set.Parent = parentSet
+	}
 
-        e.sets[dir] = set
-        return nil
+	e.insert(dir, set)
+	return nil
 }
+
+func (e *Engine) insert(path string, set *IgnoreSet) {
+	if path == "." || path == "" {
+		e.root.Set = set
+		return
+	}
+
+	parts := strings.Split(path, "/")
+	node := e.root
+	for _, part := range parts {
+		if node.Children[part] == nil {
+			node.Children[part] = newNode()
+		}
+		node = node.Children[part]
+	}
+	node.Set = set
+}
+
+func (e *Engine) lookup(path string) *IgnoreSet {
+	if path == "." || path == "" {
+		return e.root.Set
+	}
+
+	parts := strings.Split(path, "/")
+	node := e.root
+	var bestSet *IgnoreSet
+	if node.Set != nil {
+		bestSet = node.Set
+	}
+
+	for _, part := range parts {
+		next, ok := node.Children[part]
+		if !ok {
+			break
+		}
+		node = next
+		if node.Set != nil {
+			bestSet = node.Set
+		}
+	}
+	return bestSet
+}
+
 // ShouldIgnore returns true if the path should be excluded from traversal.
 // path MUST be cleaned and use forward slashes (normalized by Walker).
 func (e *Engine) ShouldIgnore(path string, isDir bool) bool {
@@ -542,28 +593,10 @@ func (e *Engine) ShouldIgnore(path string, isDir bool) bool {
 	}
 
 	// 5. Check ignore file rules via chain.
-	// Find the deepest ignore set that is a prefix of our path.
 	e.mu.RLock()
-	var bestSet *IgnoreSet
-	
-	// Fast path: check parent directories for cached ignore sets
-	curr := path
-	for {
-		if set, ok := e.sets[curr]; ok {
-			bestSet = set
-			break
-		}
-		idx := strings.LastIndexByte(curr, '/')
-		if idx < 0 {
-			// Check root "."
-			if set, ok := e.sets["."]; ok {
-				bestSet = set
-			}
-			break
-		}
-		curr = curr[:idx]
-	}
+	bestSet := e.lookup(path)
 	e.mu.RUnlock()
+
 	if bestSet == nil {
 		return false
 	}
@@ -594,11 +627,11 @@ func (e *Engine) ShouldIgnore(path string, isDir bool) bool {
 
 // GetIgnoreRules returns the loaded ignore rules for a directory.
 func (e *Engine) GetIgnoreRules(dir string) []IgnoreRule {
-        dir = filepath.ToSlash(filepath.Clean(dir))
-        e.mu.RLock()
-        defer e.mu.RUnlock()
-        if set, ok := e.sets[dir]; ok {
-                return set.Rules
-        }
-        return nil
+	dir = filepath.ToSlash(filepath.Clean(dir))
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	if set := e.lookup(dir); set != nil && set.Dir == dir {
+		return set.Rules
+	}
+	return nil
 }
