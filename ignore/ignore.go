@@ -433,10 +433,17 @@ func parseIgnoreLines(content, source string) []IgnoreRule {
 	return rules
 }
 
+// IgnoreContext holds the state for ignore lookups in a specific directory.
+// It can be passed to ShouldIgnore to avoid redundant trie traversals.
+type IgnoreContext struct {
+	set *IgnoreSet
+}
+
 // LoadIgnoreFile reads .gitignore and .ignore files from the given directory.
-func (e *Engine) LoadIgnoreFile(dir string) error {
+// It returns an IgnoreContext that can be used for subsequent ShouldIgnore calls in this directory.
+func (e *Engine) LoadIgnoreFile(dir string) (IgnoreContext, error) {
 	if e.cfg.NoIgnore {
-		return nil
+		return IgnoreContext{}, nil
 	}
 
 	dir = filepath.ToSlash(filepath.Clean(dir))
@@ -445,7 +452,7 @@ func (e *Engine) LoadIgnoreFile(dir string) error {
 	existing := e.lookup(dir)
 	e.mu.RUnlock()
 	if existing != nil && existing.Dir == dir {
-		return nil
+		return IgnoreContext{set: existing}, nil
 	}
 
 	var rules []IgnoreRule
@@ -469,7 +476,7 @@ func (e *Engine) LoadIgnoreFile(dir string) error {
 
 	// Re-check after acquiring write lock
 	if existing := e.lookup(dir); existing != nil && existing.Dir == dir {
-		return nil
+		return IgnoreContext{set: existing}, nil
 	}
 
 	set := &IgnoreSet{
@@ -484,7 +491,7 @@ func (e *Engine) LoadIgnoreFile(dir string) error {
 	}
 
 	e.insert(dir, set)
-	return nil
+	return IgnoreContext{set: set}, nil
 }
 
 func (e *Engine) insert(path string, set *IgnoreSet) {
@@ -531,7 +538,8 @@ func (e *Engine) lookup(path string) *IgnoreSet {
 
 // ShouldIgnore returns true if the path should be excluded from traversal.
 // path MUST be cleaned and use forward slashes (normalized by Walker).
-func (e *Engine) ShouldIgnore(path string, isDir bool) bool {
+// If ctx is provided, it avoids redundant trie traversals.
+func (e *Engine) ShouldIgnore(path string, isDir bool, ctx ...IgnoreContext) bool {
 	// 1. Calculate path relative to cwd for glob matching
 	relSlash := path
 	if e.baseRelSlash != "" && strings.HasPrefix(path, e.baseRelSlash) {
@@ -593,9 +601,14 @@ func (e *Engine) ShouldIgnore(path string, isDir bool) bool {
 	}
 
 	// 5. Check ignore file rules via chain.
-	e.mu.RLock()
-	bestSet := e.lookup(path)
-	e.mu.RUnlock()
+	var bestSet *IgnoreSet
+	if len(ctx) > 0 && ctx[0].set != nil {
+		bestSet = ctx[0].set
+	} else {
+		e.mu.RLock()
+		bestSet = e.lookup(path)
+		e.mu.RUnlock()
+	}
 
 	if bestSet == nil {
 		return false

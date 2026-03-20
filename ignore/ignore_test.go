@@ -322,7 +322,7 @@ func TestEngineShouldIgnore(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := engine.LoadIgnoreFile(dir); err != nil {
+	if _, err := engine.LoadIgnoreFile(dir); err != nil {
 		t.Fatal(err)
 	}
 
@@ -419,7 +419,7 @@ func TestEngineNoIgnore(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := engine.LoadIgnoreFile(dir); err != nil {
+	if _, err := engine.LoadIgnoreFile(dir); err != nil {
 		t.Fatal(err)
 	}
 
@@ -442,10 +442,10 @@ func TestEngineLoadIgnoreFileIdempotent(t *testing.T) {
 	}
 
 	// Load twice — should not panic or duplicate
-	if err := engine.LoadIgnoreFile(dir); err != nil {
+	if _, err := engine.LoadIgnoreFile(dir); err != nil {
 		t.Fatal(err)
 	}
-	if err := engine.LoadIgnoreFile(dir); err != nil {
+	if _, err := engine.LoadIgnoreFile(dir); err != nil {
 		t.Fatal(err)
 	}
 
@@ -479,7 +479,7 @@ func TestEngineIgnoreAndInclude(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := engine.LoadIgnoreFile(dir); err != nil {
+	if _, err := engine.LoadIgnoreFile(dir); err != nil {
 		t.Fatal(err)
 	}
 
@@ -514,7 +514,7 @@ func TestEngineMultipleIgnoreFiles(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := engine.LoadIgnoreFile(dir); err != nil {
+	if _, err := engine.LoadIgnoreFile(dir); err != nil {
 		t.Fatal(err)
 	}
 
@@ -547,10 +547,10 @@ func TestEngineAncestorDirectoryIgnored(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := engine.LoadIgnoreFile(dir); err != nil {
+	if _, err := engine.LoadIgnoreFile(dir); err != nil {
 		t.Fatal(err)
 	}
-	if err := engine.LoadIgnoreFile(subDir); err != nil {
+	if _, err := engine.LoadIgnoreFile(subDir); err != nil {
 		t.Fatal(err)
 	}
 
@@ -630,7 +630,7 @@ func TestEngineExhaustiveGlobAudit(t *testing.T) {
 				t.Fatal(err)
 			}
 			engine, _ := NewEngine(Config{})
-			engine.LoadIgnoreFile(dir)
+			_, _ = engine.LoadIgnoreFile(dir)
 			
 			// We need to pass the full path or ensure ShouldIgnore handles the relative path correctly.
 			// The engine uses cwd-relative logic.
@@ -682,7 +682,8 @@ func BenchmarkShouldIgnore(b *testing.B) {
 	if err != nil {
 		b.Fatal(err)
 	}
-	if err := engine.LoadIgnoreFile(dir); err != nil {
+	ictx, err := engine.LoadIgnoreFile(dir)
+	if err != nil {
 		b.Fatal(err)
 	}
 
@@ -700,11 +701,10 @@ func BenchmarkShouldIgnore(b *testing.B) {
 		{"hidden file", filepath.Join(dir, ".hidden"), false},
 	}
 
-	for _, tc := range paths {
-		b.Run(tc.name, func(b *testing.B) {
-			for b.Loop() {
-				engine.ShouldIgnore(tc.path, tc.dir)
-			}
-		})
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		for _, tc := range paths {
+			engine.ShouldIgnore(tc.path, tc.dir, ictx)
+		}
 	}
 }

@@ -78,7 +78,7 @@ func (w *Walker) Run(ctx context.Context, paths []string, fileCh chan<- Entry) {
 
 		info, err := fs.Stat(w.fsys, p)
 		if err == nil && !info.IsDir() {
-			if w.shouldSearch(p, info) {
+			if w.shouldSearch(p, info) && !w.ignoreEngine.ShouldIgnore(p, false) {
 				var ref fsref.Ref
 				dir := filepath.Dir(p)
 				base := filepath.Base(p)
@@ -146,7 +146,7 @@ func (w *Walker) walkWorker(ctx context.Context, dirCh chan string, fileCh chan<
 				root, _ = rp.OpenRoot(dir)
 			}
 
-			w.ignoreEngine.LoadIgnoreFile(dir)
+			ictx, _ := w.ignoreEngine.LoadIgnoreFile(dir)
 
 			var pathBuf []byte
 
@@ -182,7 +182,7 @@ func (w *Walker) walkWorker(ctx context.Context, dirCh chan string, fileCh chan<
 					isDir = info.IsDir()
 				}
 
-				if w.ignoreEngine.ShouldIgnore(path, isDir) {
+				if w.ignoreEngine.ShouldIgnore(path, isDir, ictx) {
 					continue
 				}
 
