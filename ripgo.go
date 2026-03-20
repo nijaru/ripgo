@@ -29,7 +29,7 @@ func Search(ctx context.Context, patternStr string, paths []string, opts ...Opti
 	return func(yield func(search.Result, error) bool) {
 		var matcher pattern.Matcher
 		var err error
-		
+
 		if cfg.Matcher != nil {
 			matcher = cfg.Matcher
 		} else {
@@ -75,9 +75,9 @@ func Search(ctx context.Context, patternStr string, paths []string, opts ...Opti
 		// Start scan workers
 		workers := cfg.Walk.Threads
 		if workers <= 0 {
-			workers = 4 
+			workers = 4
 		}
-		
+
 		for range workers {
 			scanWg.Add(1)
 			go func() {
@@ -88,7 +88,7 @@ func Search(ctx context.Context, patternStr string, paths []string, opts ...Opti
 						res.Error = err
 						// We emit the error but keep searching other files
 					}
-					
+
 					// Filter logic
 					hasMatches := len(res.Matches) > 0 || len(res.Entries) > 0 || res.Error != nil
 					if hasMatches || (res.Binary && (cfg.Search.SearchBinary || cfg.Search.OnlyBinary)) {
@@ -188,6 +188,14 @@ func WithHidden(v bool) Option {
 
 func WithNoIgnore(v bool) Option {
 	return func(c *Config) { c.Ignore.NoIgnore = v }
+}
+
+func WithTypes(types []string) Option {
+	return func(c *Config) { c.Ignore.Types = types }
+}
+
+func WithTypesNot(typesNot []string) Option {
+	return func(c *Config) { c.Ignore.TypesNot = typesNot }
 }
 
 func WithMatcher(m pattern.Matcher) Option {
