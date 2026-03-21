@@ -81,6 +81,9 @@ type Config struct {
 	SearchBinary bool
 	// OnlyBinary restricts results to binary files only.
 	OnlyBinary bool
+	// MmapThreshold is the minimum file size in bytes that triggers mmap
+	// instead of a full read. 0 defaults to 128KB.
+	MmapThreshold int64
 }
 
 // Release returns pooled resources to the searcher.
@@ -112,6 +115,9 @@ type Searcher struct {
 func NewSearcher(fsys fs.FS, cfg Config, matcher pattern.Matcher) *Searcher {
 	if fsys == nil {
 		fsys = osfs.New()
+	}
+	if cfg.MmapThreshold == 0 {
+		cfg.MmapThreshold = 128 * 1024
 	}
 
 	// Build Aho-Corasick pre-filter from extracted literals.
@@ -153,8 +159,7 @@ func (s *Searcher) Search(ref fsref.Ref) (Result, error) {
 		result.CreatedAt = stats.CreatedAt
 		result.AccessedAt = stats.AccessedAt
 	}
-	// Lower threshold to 128KB to reduce syscall overhead for medium files.
-	if info != nil && info.Size() > 128*1024 {
+	if info != nil && info.Size() > s.cfg.MmapThreshold {
 		data, unmap, err = ref.Mmap()
 		if err == nil {
 			mapped = true
