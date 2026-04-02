@@ -341,38 +341,3 @@ func (s *Searcher) Search(ref fsref.Ref) (Result, error) {
 
 	return result, nil
 }
-
-// SearchMultiline reads the entire file and matches across line boundaries.
-func (s *Searcher) SearchMultiline(path string) (Result, error) {
-	result := Result{Path: path}
-
-	var data []byte
-	var err error
-	if rfs, ok := s.fsys.(fs.ReadFileFS); ok {
-		data, err = rfs.ReadFile(path)
-	} else {
-		data, err = fs.ReadFile(s.fsys, path)
-	}
-	if err != nil {
-		return result, err
-	}
-
-	if s.matcher.MatchFile(data) {
-		lineNum := 1
-		for line := range bytes.Lines(data) {
-			line = bytes.TrimSuffix(line, []byte("\n"))
-			if _, ok := s.matcher.Match(line); ok {
-				match := Match{
-					Line:       lineNum,
-					Column:     1,
-					LineBytes:  bytes.Clone(line),
-					Submatches: [][2]int{{0, len(line)}},
-				}
-				result.Matches = append(result.Matches, match)
-			}
-			lineNum++
-		}
-	}
-
-	return result, nil
-}

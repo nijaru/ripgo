@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"fmt"
-	"io"
 	"os"
 	"os/signal"
 	"slices"
@@ -138,9 +137,6 @@ func (discardPrinter) PrintResult(search.Result) error { return nil }
 func (discardPrinter) Finish(*stats.Stats) error       { return nil }
 
 var _ printer.Printer = discardPrinter{}
-var _ io.Writer = discardPrinter{}
-
-func (discardPrinter) Write(p []byte) (int, error) { return len(p), nil }
 
 func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)

@@ -7,7 +7,6 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
-	"unicode"
 
 	"github.com/nijaru/ripgo/ignore"
 	"github.com/nijaru/ripgo/internal/cli"
@@ -196,13 +195,4 @@ func parseSize(s string) (int64, error) {
 		return 0, err
 	}
 	return n * multiplier, nil
-}
-
-func hasUppercase(s string) bool {
-	for _, r := range s {
-		if unicode.IsUpper(r) {
-			return true
-		}
-	}
-	return false
 }

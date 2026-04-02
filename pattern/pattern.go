@@ -248,19 +248,6 @@ func isLiteralBytes(s string) bool {
 	}
 	return true
 }
-func runeToByteOffset(s string, runeIdx int) int {
-	if runeIdx <= 0 {
-		return 0
-	}
-	i := 0
-	for bi := range s {
-		if i == runeIdx {
-			return bi
-		}
-		i++
-	}
-	return len(s)
-}
 
 // LiteralMatcher uses byte search for fixed-string matching.
 // It is significantly faster than RegexMatcher for simple patterns.
@@ -383,12 +370,6 @@ func IsLiteral(s string) bool {
 		}
 	}
 	return true
-}
-
-// IsRegexMeta reports whether s contains any regex metacharacters.
-func IsRegexMeta(s string) bool {
-	meta := ".*+?^${}[]|()\\"
-	return strings.ContainsAny(s, meta)
 }
 
 func hasUppercase(s string) bool {

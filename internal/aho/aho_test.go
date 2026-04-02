@@ -98,30 +98,6 @@ func TestMatchesAny_ConsecutivePatterns(t *testing.T) {
 	}
 }
 
-func TestLen(t *testing.T) {
-	m := New([][]byte{[]byte("a"), []byte("b"), []byte("c")})
-	if got := m.Len(); got != 3 {
-		t.Errorf("Len() = %d, want 3", got)
-	}
-}
-
-func TestLen_Nil(t *testing.T) {
-	var m *Machine
-	if got := m.Len(); got != 0 {
-		t.Errorf("nil machine Len() = %d, want 0", got)
-	}
-}
-
-func TestMatches(t *testing.T) {
-	m := New([][]byte{[]byte("foo"), []byte("bar")})
-	if !m.Matches([]byte("foo and bar")) {
-		t.Error("should contain both")
-	}
-	if m.Matches([]byte("only foo here")) {
-		t.Error("missing 'bar'")
-	}
-}
-
 func BenchmarkMatchesAny_3Patterns(b *testing.B) {
 	m := New([][]byte{[]byte("foo"), []byte("bar"), []byte("baz")})
 	data := []byte("the quick brown fox jumps over the lazy dog")

@@ -4,8 +4,6 @@
 // search hot path.
 package aho
 
-import "bytes"
-
 type node struct {
 	children [256]*node
 	fail     *node
@@ -90,60 +88,4 @@ func (m *Machine) MatchesAny(data []byte) bool {
 		}
 	}
 	return false
-}
-
-// Len returns the number of patterns in the machine.
-func (m *Machine) Len() int {
-	if m == nil {
-		return 0
-	}
-	return m.count
-}
-
-// Matches reports whether data contains all patterns in the machine.
-// This is a convenience for testing; the hot path uses MatchesAny.
-func (m *Machine) Matches(data []byte) bool {
-	if m == nil {
-		return true
-	}
-	for _, p := range m.collect() {
-		if !bytes.Contains(data, p) {
-			return false
-		}
-	}
-	return true
-}
-
-func (m *Machine) collect() [][]byte {
-	if m == nil {
-		return nil
-	}
-	var patterns [][]byte
-	// Iterative BFS to avoid cycles from failure links.
-	visited := make(map[*node]bool)
-	type frame struct {
-		n      *node
-		prefix []byte
-	}
-	queue := []frame{{n: m.root, prefix: nil}}
-	visited[m.root] = true
-
-	for len(queue) > 0 {
-		f := queue[0]
-		queue = queue[1:]
-
-		if f.n.output {
-			patterns = append(patterns, append([]byte(nil), f.prefix...))
-		}
-		for c, ch := range f.n.children {
-			if ch != nil && ch != m.root && !visited[ch] {
-				visited[ch] = true
-				prefix := make([]byte, len(f.prefix)+1)
-				copy(prefix, f.prefix)
-				prefix[len(f.prefix)] = byte(c)
-				queue = append(queue, frame{n: ch, prefix: prefix})
-			}
-		}
-	}
-	return patterns
 }

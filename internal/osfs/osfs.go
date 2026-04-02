@@ -4,13 +4,11 @@
 package osfs
 
 import (
-	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
-	"syscall"
 
 	"github.com/nijaru/ripgo/internal/fsref"
 )
@@ -114,43 +112,6 @@ func (f *OSFS) OpenRoot(dir string) (*fsref.Root, error) {
 		abs = filepath.Join(f.cwd, dir)
 	}
 	return fsref.NewRoot(abs)
-}
-
-// Mmap zero-copy maps the file into memory.
-func (f *OSFS) Mmap(name string) ([]byte, func() error, error) {
-	var file *os.File
-	var err error
-
-	if f.root != nil {
-		file, err = f.root.Open(f.rel(name))
-	} else {
-		file, err = os.Open(name)
-	}
-
-	if err != nil {
-		return nil, nil, err
-	}
-	defer file.Close()
-
-	info, err := file.Stat()
-	if err != nil {
-		return nil, nil, err
-	}
-
-	if info.Size() == 0 {
-		return nil, nil, fmt.Errorf("cannot mmap empty file")
-	}
-
-	data, err := syscall.Mmap(int(file.Fd()), 0, int(info.Size()), syscall.PROT_READ, syscall.MAP_SHARED)
-	if err != nil {
-		return nil, nil, err
-	}
-
-	unmap := func() error {
-		return syscall.Munmap(data)
-	}
-
-	return data, unmap, nil
 }
 
 var _ fs.FS = (*OSFS)(nil)
