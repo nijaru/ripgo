@@ -97,7 +97,7 @@ type Config struct {
 // Release returns pooled resources to the searcher.
 func (r *Result) Release() {
 	for i := range r.Matches {
-		if r.Matches[i].Submatches != nil {
+		if len(r.Matches[i].Submatches) > 1 {
 			submatchPool.Put(r.Matches[i].Submatches[:0])
 			r.Matches[i].Submatches = nil
 		}
@@ -303,9 +303,6 @@ func (s *Searcher) Search(ref fsref.Ref) (Result, error) {
 	matchCount := 0
 	needContext := s.cfg.Before > 0 || s.cfg.After > 0
 
-	// Pre-allocate matches slice.
-	result.Matches = make([]Match, 0, 16)
-
 	// Ring buffer for context lines — only retains last <before> lines.
 	type ringLine struct {
 		line     int
@@ -381,12 +378,17 @@ func (s *Searcher) Search(ref fsref.Ref) (Result, error) {
 		// Match found.
 		content := line
 
-		submatches := submatchPool.Get().([][2]int)
-		for i := 0; i < len(locs); i += 2 {
-			if locs[i] >= 0 {
-				submatches = append(submatches, [2]int{locs[i], locs[i+1]})
-			} else {
-				submatches = append(submatches, [2]int{-1, -1})
+		var submatches [][2]int
+		if len(locs) == 2 {
+			submatches = [][2]int{{locs[0], locs[1]}}
+		} else {
+			submatches = submatchPool.Get().([][2]int)
+			for i := 0; i < len(locs); i += 2 {
+				if locs[i] >= 0 {
+					submatches = append(submatches, [2]int{locs[i], locs[i+1]})
+				} else {
+					submatches = append(submatches, [2]int{-1, -1})
+				}
 			}
 		}
 
