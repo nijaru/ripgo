@@ -7,7 +7,6 @@ import (
 	"path/filepath"
 	"runtime"
 	"sync"
-	"sync/atomic"
 	"unsafe"
 
 	"github.com/nijaru/ripgo/ignore"
@@ -22,7 +21,7 @@ type rootProvider interface {
 // Config holds walker options.
 type Config struct {
 	// Threads is the number of walker workers.
-	// 0 means auto (GOMAXPROCS, capped at 4).
+	// 0 means auto (GOMAXPROCS).
 	Threads int
 	// FollowSymlinks traverses symbolic links.
 	FollowSymlinks bool
@@ -33,6 +32,82 @@ type Config struct {
 // Entry represents a file found during traversal.
 type Entry struct {
 	File fsref.Ref
+}
+
+// dirQueue manages concurrent work distribution among walk workers without
+// spawning temporary goroutines. It pops depth-first (LIFO) to keep the working
+// set small, cache-hot, and bounded.
+type dirQueue struct {
+	mu     sync.Mutex
+	cond   *sync.Cond
+	dirs   []string
+	active int
+	closed bool
+}
+
+func newDirQueue(initialCap int) *dirQueue {
+	q := &dirQueue{
+		dirs: make([]string, 0, initialCap),
+	}
+	q.cond = sync.NewCond(&q.mu)
+	return q
+}
+
+func (q *dirQueue) Push(dirs ...string) {
+	if len(dirs) == 0 {
+		return
+	}
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	if q.closed {
+		return
+	}
+	q.dirs = append(q.dirs, dirs...)
+	q.cond.Broadcast()
+}
+
+func (q *dirQueue) Pop(ctx context.Context) (string, bool) {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+
+	for len(q.dirs) == 0 {
+		if q.closed || q.active == 0 || ctx.Err() != nil {
+			q.closed = true
+			q.cond.Broadcast()
+			return "", false
+		}
+		q.cond.Wait()
+	}
+
+	if ctx.Err() != nil {
+		q.closed = true
+		q.cond.Broadcast()
+		return "", false
+	}
+
+	// LIFO pop for depth-first traversal
+	lastIdx := len(q.dirs) - 1
+	dir := q.dirs[lastIdx]
+	q.dirs = q.dirs[:lastIdx]
+	q.active++
+	return dir, true
+}
+
+func (q *dirQueue) Done() {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	q.active--
+	if q.active == 0 && len(q.dirs) == 0 {
+		q.closed = true
+		q.cond.Broadcast()
+	}
+}
+
+func (q *dirQueue) Close() {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	q.closed = true
+	q.cond.Broadcast()
 }
 
 // Walker performs parallel directory traversal, emitting file entries.
@@ -50,7 +125,7 @@ func NewWalker(fsys fs.FS, cfg Config, engine *ignore.Engine) *Walker {
 		fsys = osfs.New()
 	}
 	workers := cfg.Threads
-	if workers == 0 {
+	if workers <= 0 {
 		workers = runtime.GOMAXPROCS(0)
 	}
 
@@ -65,184 +140,172 @@ func NewWalker(fsys fs.FS, cfg Config, engine *ignore.Engine) *Walker {
 // Run walks paths and sends file entries to fileCh.
 // fileCh is closed when all work is done.
 func (w *Walker) Run(ctx context.Context, paths []string, fileCh chan<- Entry) {
-	var pending atomic.Int32
-	var closeDirOnce sync.Once
+	defer close(fileCh)
 
-	dirCh := make(chan string, 1024)
+	queue := newDirQueue(len(paths) * 2)
+	stopAfter := context.AfterFunc(ctx, func() {
+		queue.Close()
+	})
+	defer stopAfter()
 
-	var wg sync.WaitGroup
-	wg.Add(w.workers)
-
+	var initialDirs []string
 	for _, p := range paths {
 		p = filepath.ToSlash(filepath.Clean(p))
 
 		info, err := fs.Stat(w.fsys, p)
 		if err == nil && !info.IsDir() {
-			if w.shouldSearch(p, info) && !w.ignoreEngine.ShouldIgnore(p, false) {
+			// Explicit file target: search it
+			if w.shouldSearch(p, info) {
 				var ref fsref.Ref
 				dir := filepath.Dir(p)
 				base := filepath.Base(p)
 
 				if rp, ok := w.fsys.(rootProvider); ok {
 					if root, err := rp.OpenRoot(dir); err == nil {
-
 						ref = fsref.NewRootedRef(root, base, p, info)
 					}
 				}
-
 				if ref == nil {
 					ref = fsref.NewPathRef(p, info, w.fsys)
 				}
-				fileCh <- Entry{File: ref}
+				select {
+				case <-ctx.Done():
+					return
+				case fileCh <- Entry{File: ref}:
+				}
 			}
 			continue
 		}
 
-		pending.Add(1)
-		dirCh <- p
+		initialDirs = append(initialDirs, p)
 	}
 
-	if pending.Load() == 0 {
-		closeDirOnce.Do(func() { close(dirCh) })
+	if len(initialDirs) == 0 {
+		return
 	}
+
+	queue.Push(initialDirs...)
+
+	var wg sync.WaitGroup
+	wg.Add(w.workers)
 
 	for range w.workers {
 		go func() {
 			defer wg.Done()
-			w.walkWorker(ctx, dirCh, fileCh, &pending, &closeDirOnce)
+			w.walkWorker(ctx, queue, fileCh)
 		}()
 	}
 
 	wg.Wait()
-	close(fileCh)
 }
 
-func tryCloseWalk(pending *atomic.Int32, closeDirOnce *sync.Once, dirCh chan string) {
-	if pending.Load() == 0 {
-		closeDirOnce.Do(func() { close(dirCh) })
-	}
-}
+func (w *Walker) walkWorker(ctx context.Context, queue *dirQueue, fileCh chan<- Entry) {
+	var subDirs []string
+	var pathBuf []byte
 
-func (w *Walker) walkWorker(ctx context.Context, dirCh chan string, fileCh chan<- Entry, pending *atomic.Int32, closeDirOnce *sync.Once) {
 	for {
-		select {
-		case <-ctx.Done():
+		dir, ok := queue.Pop(ctx)
+		if !ok {
 			return
-		case dir, ok := <-dirCh:
-			if !ok {
+		}
+
+		entries, err := fs.ReadDir(w.fsys, dir)
+		if err != nil {
+			queue.Done()
+			continue
+		}
+
+		var root *fsref.Root
+		if rp, ok := w.fsys.(rootProvider); ok {
+			root, _ = rp.OpenRoot(dir)
+		}
+
+		ictx, _ := w.ignoreEngine.LoadIgnoreFile(dir)
+		subDirs = subDirs[:0]
+
+		for _, entry := range entries {
+			if ctx.Err() != nil {
+				queue.Done()
 				return
 			}
 
-			entries, err := fs.ReadDir(w.fsys, dir)
-			if err != nil {
-				pending.Add(-1)
-				tryCloseWalk(pending, closeDirOnce, dirCh)
+			name := entry.Name()
+			var path string
+			if dir == "." {
+				path = name
+			} else {
+				pathBuf = append(pathBuf[:0], dir...)
+				pathBuf = append(pathBuf, '/')
+				pathBuf = append(pathBuf, name...)
+				path = unsafe.String(unsafe.SliceData(pathBuf), len(pathBuf))
+			}
+
+			isDir := entry.IsDir()
+			var info fs.FileInfo
+			if entry.Type()&fs.ModeSymlink != 0 {
+				if !w.cfg.FollowSymlinks {
+					continue
+				}
+				var err error
+				info, err = fs.Stat(w.fsys, path)
+				if err != nil {
+					continue
+				}
+				isDir = info.IsDir()
+			}
+
+			if w.ignoreEngine.ShouldIgnore(path, isDir, ictx) {
 				continue
 			}
 
-			var root *fsref.Root
-			if rp, ok := w.fsys.(rootProvider); ok {
-				// We ignore error here and fall back to pathRef
-				root, _ = rp.OpenRoot(dir)
-			}
-
-			ictx, _ := w.ignoreEngine.LoadIgnoreFile(dir)
-
-			var pathBuf []byte
-
-			for _, entry := range entries {
-				if ctx.Err() != nil {
-					return
+			if isDir {
+				dirPath := path
+				if dir != "." {
+					dirPath = dir + "/" + name
 				}
-
-				name := entry.Name()
-				var path string
-				if dir == "." {
-					path = name
-				} else {
-					pathBuf = append(pathBuf[:0], dir...)
-					pathBuf = append(pathBuf, '/')
-					pathBuf = append(pathBuf, name...)
-					// Use an unsafe string for checks to avoid allocations for ignored files
-					path = unsafe.String(unsafe.SliceData(pathBuf), len(pathBuf))
-				}
-
-				isDir := entry.IsDir()
-				var info fs.FileInfo
-				if entry.Type()&fs.ModeSymlink != 0 {
-					if !w.cfg.FollowSymlinks {
-						continue
-					}
-					// Follow symlink
+				subDirs = append(subDirs, dirPath)
+			} else {
+				if w.cfg.MaxFileSize > 0 && info == nil {
 					var err error
-					info, err = fs.Stat(w.fsys, path)
+					info, err = entry.Info()
 					if err != nil {
 						continue
 					}
-					isDir = info.IsDir()
 				}
 
-				if w.ignoreEngine.ShouldIgnore(path, isDir, ictx) {
-					continue
-				}
+				if w.shouldSearch(path, info) {
+					filePath := path
+					if dir != "." {
+						filePath = dir + "/" + name
+					}
 
-				// File passed ignore checks. If it's not in the root dir, allocate a safe string for persistence.
-				if dir != "." {
-					path = dir + "/" + name
-				}
+					var ref fsref.Ref
+					if root != nil {
+						ref = fsref.NewRootedRef(root, name, filePath, info)
+					} else {
+						ref = fsref.NewPathRef(filePath, info, w.fsys)
+					}
 
-				if isDir {
-					pending.Add(1)
 					select {
 					case <-ctx.Done():
+						queue.Done()
 						return
-					case dirCh <- path:
-					default:
-						go func(p string) {
-							select {
-							case <-ctx.Done():
-								pending.Add(-1)
-								tryCloseWalk(pending, closeDirOnce, dirCh)
-							case dirCh <- p:
-							}
-						}(path)
-					}
-				} else {
-					if info == nil {
-						var err error
-						info, err = entry.Info()
-						if err != nil {
-							continue
-						}
-					}
-
-					if w.shouldSearch(path, info) {
-						var ref fsref.Ref
-						if root != nil {
-							ref = fsref.NewRootedRef(root, name, path, info)
-						} else {
-							ref = fsref.NewPathRef(path, info, w.fsys)
-						}
-
-						select {
-						case <-ctx.Done():
-							return
-						case fileCh <- Entry{File: ref}:
-						}
+					case fileCh <- Entry{File: ref}:
 					}
 				}
 			}
-
-			pending.Add(-1)
-			tryCloseWalk(pending, closeDirOnce, dirCh)
 		}
+
+		if len(subDirs) > 0 {
+			queue.Push(subDirs...)
+		}
+		queue.Done()
 	}
 }
 
 func (w *Walker) shouldSearch(path string, info fs.FileInfo) bool {
-	if w.cfg.MaxFileSize > 0 && info.Size() > w.cfg.MaxFileSize {
+	if w.cfg.MaxFileSize > 0 && info != nil && info.Size() > w.cfg.MaxFileSize {
 		return false
 	}
-
 	return true
 }

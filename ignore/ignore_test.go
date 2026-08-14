@@ -631,13 +631,13 @@ func TestEngineExhaustiveGlobAudit(t *testing.T) {
 			}
 			engine, _ := NewEngine(Config{})
 			_, _ = engine.LoadIgnoreFile(dir)
-			
+
 			// We need to pass the full path or ensure ShouldIgnore handles the relative path correctly.
 			// The engine uses cwd-relative logic.
 			fullPath := filepath.Join(dir, tt.path)
 			// Normalize for ShouldIgnore
 			clean := filepath.ToSlash(filepath.Clean(fullPath))
-			
+
 			got := engine.ShouldIgnore(clean, tt.isDir)
 			if got != tt.expect {
 				t.Errorf("ShouldIgnore(%q, dir=%v) = %v, want %v (patterns: %v)", tt.path, tt.isDir, got, tt.expect, tt.patterns)
@@ -701,8 +701,7 @@ func BenchmarkShouldIgnore(b *testing.B) {
 		{"hidden file", filepath.Join(dir, ".hidden"), false},
 	}
 
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		for _, tc := range paths {
 			engine.ShouldIgnore(tc.path, tc.dir, ictx)
 		}

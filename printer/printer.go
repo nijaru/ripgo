@@ -21,6 +21,17 @@ type Printer interface {
 	Finish(*stats.Stats) error
 }
 
+type flusher interface {
+	Flush() error
+}
+
+func flushWriter(w io.Writer) error {
+	if f, ok := w.(flusher); ok {
+		return f.Flush()
+	}
+	return nil
+}
+
 // TextPrinter outputs results in the default format.
 type TextPrinter struct {
 	w          io.Writer
@@ -28,6 +39,8 @@ type TextPrinter struct {
 	column     bool
 	heading    bool
 	color      bool
+	maxColumns int
+	printedAny bool
 }
 
 // TextConfig holds text printer options.
@@ -42,15 +55,17 @@ type TextConfig struct {
 	Heading bool
 	// Color enables colorized output.
 	Color bool
+	// MaxColumns limits the length of output lines.
+	MaxColumns int
 }
 
 const (
-	colorReset  = "\033[0m"
-	colorBold   = "\033[1m"
-	colorPath   = "\033[35m" // Magenta
-	colorLine   = "\033[32m" // Green
-	colorMatch  = "\033[1;31m" // Bold Red
-	colorSep    = "\033[36m" // Cyan
+	colorReset = "\033[0m"
+	colorBold  = "\033[1m"
+	colorPath  = "\033[35m"   // Magenta
+	colorLine  = "\033[32m"   // Green
+	colorMatch = "\033[1;31m" // Bold Red
+	colorSep   = "\033[36m"   // Cyan
 )
 
 func colorize(s string, color string, enabled bool) string {
@@ -60,17 +75,34 @@ func colorize(s string, color string, enabled bool) string {
 	return color + s + colorReset
 }
 
+func (p *TextPrinter) truncate(line []byte) []byte {
+	if p.maxColumns <= 0 || len(line) <= p.maxColumns {
+		return line
+	}
+	if p.maxColumns < 10 {
+		return line[:p.maxColumns]
+	}
+	half := (p.maxColumns - 5) / 2
+	res := make([]byte, 0, p.maxColumns)
+	res = append(res, line[:half]...)
+	res = append(res, []byte("[...]")...)
+	res = append(res, line[len(line)-(p.maxColumns-half-5):]...)
+	return res
+}
+
 // NewTextPrinter creates a text printer.
 func NewTextPrinter(cfg TextConfig) *TextPrinter {
-	if cfg.Writer == nil {
-		cfg.Writer = os.Stdout
+	w := cfg.Writer
+	if w == nil {
+		w = os.Stdout
 	}
 	return &TextPrinter{
-		w:          cfg.Writer,
+		w:          w,
 		lineNumber: cfg.LineNumber,
 		column:     cfg.Column,
 		heading:    cfg.Heading,
 		color:      cfg.Color,
+		maxColumns: cfg.MaxColumns,
 	}
 }
 
@@ -81,8 +113,12 @@ func (p *TextPrinter) PrintResult(r search.Result) error {
 	}
 
 	if p.heading {
+		if p.printedAny {
+			fmt.Fprintln(p.w)
+		}
 		fmt.Fprintln(p.w, colorize(r.Path, colorPath, p.color))
 	}
+	p.printedAny = true
 
 	// Use entries if available (context lines), otherwise fall back to matches.
 	if len(r.Entries) > 0 {
@@ -90,7 +126,11 @@ func (p *TextPrinter) PrintResult(r search.Result) error {
 	}
 
 	for _, m := range r.Matches {
-		p.printMatchLine(r.Path, m.Line, m.Column, m.LineBytes, m.Submatches)
+		content := m.LineBytes
+		if m.ReplaceBytes != nil {
+			content = m.ReplaceBytes
+		}
+		p.printMatchLine(r.Path, m, content)
 	}
 	return nil
 }
@@ -105,15 +145,11 @@ func (p *TextPrinter) printEntries(r search.Result) error {
 		}
 
 		if e.Kind == search.EntryMatch {
-			// If we have a column but no submatches (common in context mode),
-			// synthesize a single submatch for highlighting.
-			var sub [][2]int
-			if e.Column > 0 {
-				// We don't know the exact end of the match here from Entry alone,
-				// but for TextPrinter we can't easily get it without refactoring Entry.
-				// For now, we skip highlighting in context-mode match lines or refactor Entry.
-			}
-			p.printMatchLine(r.Path, e.Line, e.Column, e.LineBytes, sub)
+			p.printMatchLine(r.Path, search.Match{
+				Line:      e.Line,
+				Column:    e.Column,
+				LineBytes: e.LineBytes,
+			}, e.LineBytes)
 		} else {
 			p.printContextLine(r.Path, e.Line, string(e.LineBytes))
 		}
@@ -123,37 +159,35 @@ func (p *TextPrinter) printEntries(r search.Result) error {
 }
 
 // formatMatch highlights matches within a line using ANSI escapes.
-func (p *TextPrinter) formatMatch(line []byte, submatches [][2]int) string {
-	if !p.color || len(submatches) == 0 {
+func (p *TextPrinter) formatMatch(match search.Match, line []byte, submatches [][2]int) string {
+	if !p.color || len(submatches) == 0 || match.ReplaceBytes != nil {
 		return string(line)
 	}
 
-	var sb strings.Builder
-	last := 0
-	
-	// Only highlight the full match (index 0) to avoid issues with
-	// overlapping or nested capture groups.
 	full := submatches[0]
 	if full[0] < 0 || full[0] > len(line) || full[1] > len(line) || full[0] > full[1] {
 		return string(line)
 	}
 
-	sb.Write(line[last:full[0]])
+	var sb strings.Builder
+	sb.Grow(len(line) + len(colorMatch) + len(colorReset))
+	sb.Write(line[:full[0]])
 	sb.WriteString(colorMatch)
 	sb.Write(line[full[0]:full[1]])
 	sb.WriteString(colorReset)
 	sb.Write(line[full[1]:])
-	
+
 	return sb.String()
 }
 
 // printMatchLine prints a line with a match (colon separator).
-func (p *TextPrinter) printMatchLine(path string, line, col int, content []byte, sub [][2]int) {
+func (p *TextPrinter) printMatchLine(path string, match search.Match, content []byte) {
 	sep := colorize(":", colorSep, p.color)
 	pathStr := colorize(path, colorPath, p.color)
-	lineStr := colorize(fmt.Sprint(line), colorLine, p.color)
-	colStr := colorize(fmt.Sprint(col), colorLine, p.color)
-	formatted := p.formatMatch(content, sub)
+	lineStr := colorize(fmt.Sprint(match.Line), colorLine, p.color)
+	colStr := colorize(fmt.Sprint(match.Column), colorLine, p.color)
+	truncated := p.truncate(content)
+	formatted := p.formatMatch(match, truncated, match.Submatches)
 
 	if p.heading {
 		switch {
@@ -182,26 +216,27 @@ func (p *TextPrinter) printContextLine(path string, line int, content string) {
 	sep := colorize("-", colorSep, p.color)
 	pathStr := colorize(path, colorPath, p.color)
 	lineStr := colorize(fmt.Sprint(line), colorLine, p.color)
+	truncated := p.truncate([]byte(content))
 
 	if p.heading {
 		if p.lineNumber {
-			fmt.Fprintf(p.w, "%s%s%s\n", lineStr, sep, content)
+			fmt.Fprintf(p.w, "%s%s%s\n", lineStr, sep, string(truncated))
 		} else {
-			fmt.Fprintf(p.w, "%s\n", content)
+			fmt.Fprintf(p.w, "%s\n", string(truncated))
 		}
 		return
 	}
 
 	if p.lineNumber {
-		fmt.Fprintf(p.w, "%s%s%s%s%s\n", pathStr, sep, lineStr, sep, content)
+		fmt.Fprintf(p.w, "%s%s%s%s%s\n", pathStr, sep, lineStr, sep, string(truncated))
 	} else {
-		fmt.Fprintf(p.w, "%s%s%s\n", pathStr, sep, content)
+		fmt.Fprintf(p.w, "%s%s%s\n", pathStr, sep, string(truncated))
 	}
 }
 
-// Finish is a no-op for TextPrinter.
+// Finish flushes any buffered output.
 func (p *TextPrinter) Finish(_ *stats.Stats) error {
-	return nil
+	return flushWriter(p.w)
 }
 
 // CountPrinter outputs match counts per file.
@@ -223,9 +258,9 @@ func (p *CountPrinter) PrintResult(r search.Result) error {
 	return nil
 }
 
-// Finish is a no-op for CountPrinter.
+// Finish flushes any buffered output.
 func (p *CountPrinter) Finish(_ *stats.Stats) error {
-	return nil
+	return flushWriter(p.w)
 }
 
 // FilesPrinter outputs only file paths with matches.
@@ -239,7 +274,10 @@ func NewFilesPrinter(w io.Writer) *FilesPrinter {
 	if w == nil {
 		w = os.Stdout
 	}
-	return &FilesPrinter{w: w, seen: make(map[string]bool)}
+	return &FilesPrinter{
+		w:    w,
+		seen: make(map[string]bool),
+	}
 }
 
 // PrintResult outputs the file path if it has matches and hasn't been printed yet.
@@ -251,9 +289,9 @@ func (p *FilesPrinter) PrintResult(r search.Result) error {
 	return nil
 }
 
-// Finish is a no-op for FilesPrinter.
+// Finish flushes any buffered output.
 func (p *FilesPrinter) Finish(_ *stats.Stats) error {
-	return nil
+	return flushWriter(p.w)
 }
 
 // JSONPrinter outputs results as JSON.
@@ -293,7 +331,6 @@ func (p *JSONPrinter) PrintResult(r search.Result) error {
 // Finish writes the closing bracket for the JSON array and flushes.
 func (p *JSONPrinter) Finish(_ *stats.Stats) error {
 	if p.first {
-		// No results printed
 		if _, err := p.w.Write([]byte("[]")); err != nil {
 			return err
 		}

@@ -209,3 +209,28 @@ func WithMaxFileSize(n int64) Option {
 func WithMatcher(m pattern.Matcher) Option {
 	return func(c *Config) { c.Matcher = m }
 }
+
+func WithMultiline(v bool) Option {
+	return func(c *Config) {
+		c.Pattern.Multiline = v
+		c.Search.Multiline = v
+	}
+}
+
+func WithWordRegexp(v bool) Option {
+	return func(c *Config) {
+		c.Pattern.WordRegexp = v
+	}
+}
+
+func WithOnlyMatching(v bool) Option {
+	return func(c *Config) {
+		c.Search.OnlyMatching = v
+	}
+}
+
+func WithReplace(v string) Option {
+	return func(c *Config) {
+		c.Search.Replace = v
+	}
+}

@@ -38,8 +38,7 @@ func BenchmarkRecordMatch(b *testing.B) {
 		Path:    "test.go",
 		Matches: []search.Match{{Line: 1}, {Line: 2}, {Line: 3}},
 	}
-	b.ResetTimer()
-	for range b.N {
+	for b.Loop() {
 		var st Stats
 		st.RecordMatch(r)
 	}
@@ -47,8 +46,7 @@ func BenchmarkRecordMatch(b *testing.B) {
 
 func BenchmarkRecordNoMatch(b *testing.B) {
 	r := search.Result{Path: "empty.go"}
-	b.ResetTimer()
-	for range b.N {
+	for b.Loop() {
 		var st Stats
 		st.RecordMatch(r)
 	}
@@ -62,8 +60,7 @@ func BenchmarkRecordMany(b *testing.B) {
 			Matches: []search.Match{{Line: i + 1}},
 		}
 	}
-	b.ResetTimer()
-	for range b.N {
+	for b.Loop() {
 		var st Stats
 		for _, r := range results {
 			st.RecordMatch(r)

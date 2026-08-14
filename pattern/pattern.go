@@ -2,6 +2,7 @@ package pattern
 
 import (
 	"bytes"
+	"fmt"
 	"regexp"
 	"strings"
 
@@ -21,6 +22,10 @@ type Config struct {
 	SmartCase bool
 	// Pcre2 uses PCRE2-compatible regex engine.
 	Pcre2 bool
+	// Multiline enables matching across line boundaries.
+	Multiline bool
+	// WordRegexp matches only if the match is surrounded by word boundaries.
+	WordRegexp bool
 }
 
 // Matcher performs line-oriented matching.
@@ -43,6 +48,12 @@ type Matcher interface {
 	// When non-nil, every byte slice must appear in the data for a match to be
 	// possible. Used by the search pre-filter to skip files early.
 	Literals() [][]byte
+	// FindAll searches for all matches in the data and calls the callback for each.
+	// The callback returns false to stop searching.
+	FindAll(data []byte, callback func(locs []int) bool)
+	// Expand appends the replacement template to dst, replacing placeholders
+	// like $1 or ${name} with captured groups from the match.
+	Expand(dst []byte, template []byte, line []byte, locs []int) []byte
 }
 
 // RegexMatcher wraps stdlib regexp for pattern matching.
@@ -103,8 +114,22 @@ func (m *RegexMatcher) MatchFile(data []byte) bool {
 	return m.re.Match(data)
 }
 
+// FindAll searches for all matches in the data and calls the callback for each.
+func (m *RegexMatcher) FindAll(data []byte, callback func(locs []int) bool) {
+	for _, locs := range m.re.FindAllSubmatchIndex(data, -1) {
+		if !callback(locs) {
+			break
+		}
+	}
+}
+
 // Name returns "regex".
 func (m *RegexMatcher) Name() string { return "regex" }
+
+// Expand appends the replacement template to dst.
+func (m *RegexMatcher) Expand(dst []byte, template []byte, line []byte, locs []int) []byte {
+	return m.re.Expand(dst, template, line, locs)
+}
 
 // PCREMatcher wraps regexp2 for PCRE2-compatible pattern matching.
 // Users should generally create Matchers via New().
@@ -123,27 +148,20 @@ func (m *PCREMatcher) Match(line []byte) (locs []int, ok bool) {
 
 	groups := mt.Groups()
 	locs = make([]int, 0, 2*len(groups))
-
-	// Cache rune offsets for the current line to avoid O(N^2) on multiple groups
-	var runeToByte []int
+	isASCII := isAllASCII(line)
 
 	for _, g := range groups {
 		if g.Index < 0 {
 			locs = append(locs, -1, -1)
 			continue
 		}
-
-		if runeToByte == nil {
-			runeToByte = make([]int, 0, len(s))
-			for bi := range s {
-				runeToByte = append(runeToByte, bi)
-			}
-			runeToByte = append(runeToByte, len(s))
+		if isASCII {
+			locs = append(locs, g.Index, g.Index+g.Length)
+		} else {
+			start := runeOffsetToByte(s, g.Index)
+			end := runeOffsetToByte(s, g.Index+g.Length)
+			locs = append(locs, start, end)
 		}
-
-		start := runeToByte[g.Index]
-		end := runeToByte[g.Index+g.Length]
-		locs = append(locs, start, end)
 	}
 	return locs, true
 }
@@ -156,6 +174,72 @@ func (m *PCREMatcher) MatchFile(data []byte) bool {
 
 // Name returns "pcre".
 func (m *PCREMatcher) Name() string { return "pcre" }
+
+// FindAll searches for all matches in the data and calls the callback for each.
+func (m *PCREMatcher) FindAll(data []byte, callback func(locs []int) bool) {
+	s := string(data)
+	mt, err := m.re.FindStringMatch(s)
+	if err != nil || mt == nil {
+		return
+	}
+
+	isASCII := isAllASCII(data)
+	for mt != nil {
+		groups := mt.Groups()
+		locs := make([]int, 0, 2*len(groups))
+
+		for _, g := range groups {
+			if g.Index < 0 {
+				locs = append(locs, -1, -1)
+				continue
+			}
+			if isASCII {
+				locs = append(locs, g.Index, g.Index+g.Length)
+			} else {
+				start := runeOffsetToByte(s, g.Index)
+				end := runeOffsetToByte(s, g.Index+g.Length)
+				locs = append(locs, start, end)
+			}
+		}
+
+		if !callback(locs) {
+			break
+		}
+
+		mt, err = m.re.FindNextMatch(mt)
+		if err != nil {
+			break
+		}
+	}
+}
+
+func isAllASCII(b []byte) bool {
+	for i := 0; i < len(b); i++ {
+		if b[i] >= 0x80 {
+			return false
+		}
+	}
+	return true
+}
+
+func runeOffsetToByte(s string, runeIndex int) int {
+	if runeIndex <= 0 {
+		return 0
+	}
+	curRune := 0
+	for byteOffset := range s {
+		if curRune == runeIndex {
+			return byteOffset
+		}
+		curRune++
+	}
+	return len(s)
+}
+
+// Expand appends the replacement template to dst.
+func (m *PCREMatcher) Expand(dst []byte, template []byte, line []byte, locs []int) []byte {
+	return expandSimple(dst, template, line, locs)
+}
 
 func (m *PCREMatcher) Literal() []byte {
 	// PCRE patterns often start with (?flags). If so, we can't easily extract a literal prefix
@@ -188,10 +272,14 @@ func (m *PCREMatcher) Literals() [][]byte {
 }
 
 // newPCREMatcher compiles a PCRE2-compatible matcher.
-func newPCREMatcher(pattern string, ignoreCase bool) (*PCREMatcher, error) {
+func newPCREMatcher(pattern string, multiline, ignoreCase bool) (*PCREMatcher, error) {
 	var flags regexp2.RegexOptions
 	if ignoreCase {
 		flags |= regexp2.IgnoreCase
+	}
+	if multiline {
+		flags |= regexp2.Multiline
+		flags |= regexp2.Singleline // . matches \n
 	}
 	re, err := regexp2.Compile(pattern, flags)
 	if err != nil {
@@ -253,30 +341,55 @@ func isLiteralBytes(s string) bool {
 // It is significantly faster than RegexMatcher for simple patterns.
 // Users should generally create Matchers via New().
 type LiteralMatcher struct {
-	pattern  []byte
-	lower    []byte
-	caseFold bool
-	locs     [2]int // reusable locs to avoid allocation
+	pattern    []byte
+	lower      []byte
+	caseFold   bool
+	wordRegexp bool
+}
+
+// isWord reports whether c is a word character: [a-zA-Z0-9_].
+func isWord(c byte) bool {
+	return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_'
+}
+
+// isBoundary reports whether idx in line is a word boundary relative to a match
+// starting/ending at that position.
+func isBoundary(line []byte, idx int) bool {
+	if idx <= 0 || idx >= len(line) {
+		return true
+	}
+	return isWord(line[idx-1]) != isWord(line[idx])
 }
 
 // Match searches for the pattern in a single line.
 func (m *LiteralMatcher) Match(line []byte) (locs []int, ok bool) {
-	if m.caseFold {
-		idx := indexCaseInsensitive(line, m.pattern)
+	start := 0
+	for {
+		var idx int
+		if m.caseFold {
+			idx = indexCaseInsensitive(line[start:], m.pattern)
+		} else {
+			idx = bytes.Index(line[start:], m.pattern)
+		}
+
 		if idx < 0 {
 			return nil, false
 		}
-		m.locs[0] = idx
-		m.locs[1] = idx + len(m.pattern)
-		return m.locs[:], true
+
+		pos := start + idx
+		if m.wordRegexp {
+			// Check left and right boundaries
+			if !isBoundary(line, pos) || !isBoundary(line, pos+len(m.pattern)) {
+				start += idx + 1
+				if start >= len(line) {
+					return nil, false
+				}
+				continue
+			}
+		}
+
+		return []int{pos, pos + len(m.pattern)}, true
 	}
-	idx := bytes.Index(line, m.pattern)
-	if idx < 0 {
-		return nil, false
-	}
-	m.locs[0] = idx
-	m.locs[1] = idx + len(m.pattern)
-	return m.locs[:], true
 }
 
 // MatchFile searches the entire file contents for the pattern.
@@ -289,6 +402,11 @@ func (m *LiteralMatcher) MatchFile(data []byte) bool {
 
 // Name returns "literal".
 func (m *LiteralMatcher) Name() string { return "literal" }
+
+// Expand appends the replacement template to dst.
+func (m *LiteralMatcher) Expand(dst []byte, template []byte, line []byte, locs []int) []byte {
+	return expandSimple(dst, template, line, locs)
+}
 
 // Literal returns the fixed literal string if the matcher is purely literal
 // and case-sensitive.
@@ -311,6 +429,44 @@ func (m *LiteralMatcher) Literals() [][]byte {
 // CaseFold returns true if this matcher performs case-insensitive matching.
 func (m *LiteralMatcher) CaseFold() bool { return m.caseFold }
 
+// FindAll searches for all matches in the data and calls the callback for each.
+func (m *LiteralMatcher) FindAll(data []byte, callback func(locs []int) bool) {
+	start := 0
+	for {
+		var idx int
+		if m.caseFold {
+			idx = indexCaseInsensitive(data[start:], m.pattern)
+		} else {
+			idx = bytes.Index(data[start:], m.pattern)
+		}
+
+		if idx < 0 {
+			break
+		}
+
+		pos := start + idx
+		if m.wordRegexp {
+			// Check left and right boundaries
+			if !isBoundary(data, pos) || !isBoundary(data, pos+len(m.pattern)) {
+				start += idx + 1
+				if start >= len(data) {
+					break
+				}
+				continue
+			}
+		}
+
+		locs := []int{pos, pos + len(m.pattern)}
+		if !callback(locs) {
+			break
+		}
+		start = pos + len(m.pattern)
+		if start >= len(data) {
+			break
+		}
+	}
+}
+
 // New compiles a Matcher from the given config.
 func New(cfg Config) (Matcher, error) {
 	pattern := cfg.Pattern
@@ -325,26 +481,38 @@ func New(cfg Config) (Matcher, error) {
 	if cfg.FixedStrings {
 		lit := []byte(pattern)
 		return &LiteralMatcher{
-			pattern:  lit,
-			caseFold: cfg.IgnoreCase,
+			pattern:    lit,
+			caseFold:   cfg.IgnoreCase,
+			wordRegexp: cfg.WordRegexp,
 		}, nil
 	}
 
 	if cfg.Pcre2 {
-		return newPCREMatcher(pattern, cfg.IgnoreCase)
+		if cfg.WordRegexp {
+			pattern = `\b(?:` + pattern + `)\b`
+		}
+		return newPCREMatcher(pattern, cfg.Multiline, cfg.IgnoreCase)
 	}
 
 	if IsLiteral(pattern) {
 		lit := []byte(pattern)
 		return &LiteralMatcher{
-			pattern:  lit,
-			caseFold: cfg.IgnoreCase,
+			pattern:    lit,
+			caseFold:   cfg.IgnoreCase,
+			wordRegexp: cfg.WordRegexp,
 		}, nil
+	}
+
+	if cfg.WordRegexp {
+		pattern = `\b(?:` + pattern + `)\b`
 	}
 
 	flags := ""
 	if cfg.IgnoreCase {
 		flags += "i"
+	}
+	if cfg.Multiline {
+		flags += "sm"
 	}
 	if flags != "" {
 		pattern = "(?" + flags + ")" + pattern
@@ -382,12 +550,13 @@ func hasUppercase(s string) bool {
 }
 
 // indexCaseInsensitive performs a non-allocating case-insensitive byte search.
-// It is optimized for ASCII.
+// It uses bytes.IndexByte for fast SIMD prefix skipping, then verifies case folding.
 func indexCaseInsensitive(line, pattern []byte) int {
-	if len(pattern) == 0 {
+	n := len(pattern)
+	if n == 0 {
 		return 0
 	}
-	if len(pattern) > len(line) {
+	if n > len(line) {
 		return -1
 	}
 
@@ -399,13 +568,36 @@ func indexCaseInsensitive(line, pattern []byte) int {
 		firstAlt = first + ('a' - 'A')
 	}
 
-	for i := 0; i <= len(line)-len(pattern); i++ {
-		c := line[i]
-		if c == first || c == firstAlt {
-			if equalFold(line[i:i+len(pattern)], pattern) {
-				return i
+	for i := 0; i <= len(line)-n; {
+		remaining := line[i:]
+		var skip int
+		if first == firstAlt {
+			skip = bytes.IndexByte(remaining, first)
+		} else {
+			idx1 := bytes.IndexByte(remaining, first)
+			idx2 := bytes.IndexByte(remaining, firstAlt)
+			if idx1 < 0 {
+				skip = idx2
+			} else if idx2 < 0 {
+				skip = idx1
+			} else {
+				skip = min(idx1, idx2)
 			}
 		}
+
+		if skip < 0 {
+			return -1
+		}
+
+		i += skip
+		if i > len(line)-n {
+			return -1
+		}
+
+		if equalFold(line[i:i+n], pattern) {
+			return i
+		}
+		i++
 	}
 	return -1
 }
@@ -432,4 +624,62 @@ func equalFold(s, t []byte) bool {
 		}
 	}
 	return true
+}
+
+// expandSimple implements basic $1, $2, ${name} expansion.
+func expandSimple(dst []byte, template []byte, line []byte, locs []int) []byte {
+	for i := 0; i < len(template); i++ {
+		c := template[i]
+		if c == '$' && i+1 < len(template) {
+			i++
+			c = template[i]
+			if c == '$' {
+				dst = append(dst, '$')
+				continue
+			}
+
+			var name string
+			if c == '{' {
+				// ${name}
+				start := i + 1
+				for i < len(template) && template[i] != '}' {
+					i++
+				}
+				if i < len(template) {
+					name = string(template[start:i])
+				}
+			} else if c >= '0' && c <= '9' {
+				// $n
+				start := i
+				for i+1 < len(template) && template[i+1] >= '0' && template[i+1] <= '9' {
+					i++
+				}
+				name = string(template[start : i+1])
+			}
+
+			if name != "" {
+				// Note: we don't support named groups for now, only numbered.
+				if n, err := parseGroupIndex(name); err == nil && n >= 0 && n*2+1 < len(locs) {
+					start, end := locs[n*2], locs[n*2+1]
+					if start >= 0 && end >= 0 && start <= end && end <= len(line) {
+						dst = append(dst, line[start:end]...)
+					}
+				}
+			}
+			continue
+		}
+		dst = append(dst, c)
+	}
+	return dst
+}
+
+func parseGroupIndex(s string) (int, error) {
+	var n int
+	for i := 0; i < len(s); i++ {
+		if s[i] < '0' || s[i] > '9' {
+			return -1, fmt.Errorf("invalid index")
+		}
+		n = n*10 + int(s[i]-'0')
+	}
+	return n, nil
 }

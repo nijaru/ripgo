@@ -30,6 +30,7 @@ type Config struct {
 	Count            bool
 	FilesWithMatches bool
 	Quiet            bool
+	MaxColumns       int
 	Json             bool
 	Heading          bool
 	Color            bool
@@ -104,12 +105,17 @@ func New(opts cli.Options) (*Config, error) {
 		IgnoreCase:   opts.IgnoreCase,
 		SmartCase:    opts.SmartCase,
 		Pcre2:        opts.Pcre2,
+		Multiline:    opts.Multiline,
+		WordRegexp:   opts.WordRegexp,
 	}
 
 	scfg := search.Config{
 		MaxCount:     opts.MaxCount,
-		SearchBinary: !opts.NoBinary && !opts.OnlyBinary,
+		SearchBinary: (!opts.NoBinary && !opts.OnlyBinary) || opts.Unrestricted >= 3,
 		OnlyBinary:   opts.OnlyBinary,
+		Multiline:    opts.Multiline,
+		OnlyMatching: opts.OnlyMatching,
+		Replace:      opts.Replace,
 	}
 
 	if opts.Context > 0 {
@@ -138,8 +144,8 @@ func New(opts cli.Options) (*Config, error) {
 		GlobExcludes: opts.GlobExclude,
 		Types:        opts.Type,
 		TypesNot:     opts.TypeNot,
-		NoIgnore:     opts.NoIgnore,
-		Hidden:       opts.Hidden,
+		NoIgnore:     opts.NoIgnore || opts.Unrestricted >= 1,
+		Hidden:       opts.Hidden || opts.Unrestricted >= 2,
 	}
 
 	threads := opts.Threads
@@ -158,6 +164,7 @@ func New(opts cli.Options) (*Config, error) {
 		Count:            opts.Count,
 		FilesWithMatches: opts.FilesWithMatches,
 		Quiet:            opts.Quiet,
+		MaxColumns:       opts.MaxColumns,
 		Json:             opts.Json,
 		Heading:          heading,
 		Color:            useColor,

@@ -23,6 +23,8 @@ type Match struct {
 	LineBytes []byte
 	// Submatches holds [start, end) byte offsets for each submatch.
 	Submatches [][2]int
+	// ReplaceBytes holds the expanded replacement if requested.
+	ReplaceBytes []byte
 }
 
 // EntryKind distinguishes match lines from context lines.
@@ -84,6 +86,12 @@ type Config struct {
 	// MmapThreshold is the minimum file size in bytes that triggers mmap
 	// instead of a full read. 0 defaults to 128KB.
 	MmapThreshold int64
+	// Multiline enables matching across line boundaries.
+	Multiline bool
+	// OnlyMatching returns only the matched parts of a line.
+	OnlyMatching bool
+	// Replace is the replacement template.
+	Replace string
 }
 
 // Release returns pooled resources to the searcher.
@@ -93,12 +101,22 @@ func (r *Result) Release() {
 			submatchPool.Put(r.Matches[i].Submatches[:0])
 			r.Matches[i].Submatches = nil
 		}
+		if r.Matches[i].ReplaceBytes != nil {
+			expandPool.Put(r.Matches[i].ReplaceBytes[:0])
+			r.Matches[i].ReplaceBytes = nil
+		}
 	}
 }
 
 var submatchPool = sync.Pool{
 	New: func() any {
 		return make([][2]int, 0, 16)
+	},
+}
+
+var expandPool = sync.Pool{
+	New: func() any {
+		return make([]byte, 0, 1024)
 	},
 }
 
@@ -138,6 +156,90 @@ func NewSearcher(fsys fs.FS, cfg Config, matcher pattern.Matcher) *Searcher {
 func (s *Searcher) SearchPath(path string, info fs.FileInfo) (Result, error) {
 	ref := fsref.NewPathRef(path, info, s.fsys)
 	return s.Search(ref)
+}
+
+func (s *Searcher) searchMultiline(data []byte, result Result, mapped bool) (Result, error) {
+	matchCount := 0
+	lastLineStart := 0
+	lastLineNum := 1
+
+	s.matcher.FindAll(data, func(locs []int) bool {
+		if s.cfg.MaxCount > 0 && matchCount >= s.cfg.MaxCount {
+			return false
+		}
+
+		start := locs[0]
+		end := locs[1]
+
+		// Find the line number for the start of the match lazily.
+		// Count newlines from the last known line start.
+		for i := lastLineStart; i < start; i++ {
+			if data[i] == '\n' {
+				lastLineStart = i + 1
+				lastLineNum++
+			}
+		}
+
+		lineNum := lastLineNum
+		column := start - lastLineStart + 1
+
+		// Find the end of the last line of the match.
+		lastLineEnd := len(data)
+		for i := end; i < len(data); i++ {
+			if data[i] == '\n' {
+				lastLineEnd = i
+				break
+			}
+		}
+
+		content := data[lastLineStart:lastLineEnd]
+		if mapped {
+			content = bytes.Clone(content)
+		}
+
+		submatches := submatchPool.Get().([][2]int)
+		for i := 0; i < len(locs); i += 2 {
+			if locs[i] >= 0 {
+				submatches = append(submatches, [2]int{locs[i] - lastLineStart, locs[i+1] - lastLineStart})
+			} else {
+				submatches = append(submatches, [2]int{-1, -1})
+			}
+		}
+
+		match := Match{
+			Line:       lineNum,
+			Column:     column,
+			LineBytes:  content,
+			Submatches: submatches,
+		}
+
+		if s.cfg.Replace != "" {
+			buf := expandPool.Get().([]byte)
+			expanded := s.matcher.Expand(buf[:0], []byte(s.cfg.Replace), data, locs)
+			prefix := data[lastLineStart:start]
+			suffix := data[end:lastLineEnd]
+			replaced := make([]byte, 0, len(prefix)+len(expanded)+len(suffix))
+			replaced = append(append(append(replaced, prefix...), expanded...), suffix...)
+			match.ReplaceBytes = replaced
+			expandPool.Put(buf[:0])
+		}
+
+		if s.cfg.OnlyMatching {
+			matchedContent := data[start:end]
+			if mapped {
+				matchedContent = bytes.Clone(matchedContent)
+			}
+			match.LineBytes = matchedContent
+			match.Submatches = [][2]int{{0, len(matchedContent)}}
+		}
+
+		result.Matches = append(result.Matches, match)
+		matchCount++
+
+		return true
+	})
+
+	return result, nil
 }
 
 // Search reads a file via the provided Ref and returns all matches.
@@ -194,6 +296,10 @@ func (s *Searcher) Search(ref fsref.Ref) (Result, error) {
 		return result, nil
 	}
 
+	if s.cfg.Multiline {
+		return s.searchMultiline(data, result, mapped)
+	}
+
 	matchCount := 0
 	needContext := s.cfg.Before > 0 || s.cfg.After > 0
 
@@ -205,8 +311,11 @@ func (s *Searcher) Search(ref fsref.Ref) (Result, error) {
 		line     int
 		lineData []byte
 	}
-	beforeCap := min(s.cfg.Before, 32)
-	ring := make([]ringLine, beforeCap)
+	beforeCap := s.cfg.Before
+	var ring []ringLine
+	if beforeCap > 0 {
+		ring = make([]ringLine, beforeCap)
+	}
 	ringFront := 0 // points to oldest slot
 	ringCount := 0
 
@@ -218,6 +327,9 @@ func (s *Searcher) Search(ref fsref.Ref) (Result, error) {
 	lineNum := 1
 	for line := range bytes.Lines(data) {
 		line = bytes.TrimSuffix(line, []byte("\n"))
+		if len(line) > 0 && line[len(line)-1] == '\r' {
+			line = line[:len(line)-1]
+		}
 
 		if needContext && afterActive {
 			// Emitting after-context for a previous match.
@@ -284,6 +396,35 @@ func (s *Searcher) Search(ref fsref.Ref) (Result, error) {
 			LineBytes:  content,
 			Submatches: submatches,
 		}
+
+		if s.cfg.Replace != "" {
+			buf := expandPool.Get().([]byte)
+			expanded := s.matcher.Expand(buf[:0], []byte(s.cfg.Replace), line, locs)
+			prefix := line[:locs[0]]
+			suffix := line[locs[1]:]
+			replaced := make([]byte, 0, len(prefix)+len(expanded)+len(suffix))
+			replaced = append(append(append(replaced, prefix...), expanded...), suffix...)
+			match.ReplaceBytes = replaced
+			expandPool.Put(buf[:0])
+		}
+
+		if s.cfg.OnlyMatching {
+			m := match
+			matchedText := content[locs[0]:locs[1]]
+			if mapped {
+				matchedText = bytes.Clone(matchedText)
+			}
+			m.LineBytes = matchedText
+			m.Submatches = [][2]int{{0, len(matchedText)}}
+			result.Matches = append(result.Matches, m)
+			matchCount++
+			if s.cfg.MaxCount > 0 && matchCount >= s.cfg.MaxCount {
+				break
+			}
+			lineNum++
+			continue
+		}
+
 		result.Matches = append(result.Matches, match)
 		matchCount++
 

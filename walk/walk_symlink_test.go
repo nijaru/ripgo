@@ -28,7 +28,7 @@ func TestWalkerSymlinks(t *testing.T) {
 	}
 
 	engine := newTestEngine(t, ignore.Config{NoIgnore: true, Hidden: true})
-	
+
 	t.Run("FollowSymlinks=false", func(t *testing.T) {
 		w := NewWalker(nil, Config{FollowSymlinks: false}, engine)
 		files := collectFiles(t, w, root)
@@ -36,7 +36,7 @@ func TestWalkerSymlinks(t *testing.T) {
 		// Should NOT follow 'link-dir' and NOT follow 'link-file'
 		// It currently might include 'link-file' as a file because it's not a dir.
 		// Ripgrep by default does NOT follow symlinks.
-		
+
 		want := []string{"b.txt", "real/a.txt"}
 		sort.Strings(files)
 		if len(files) != len(want) {

@@ -114,7 +114,9 @@ func (f *OSFS) OpenRoot(dir string) (*fsref.Root, error) {
 	return fsref.NewRoot(abs)
 }
 
-var _ fs.FS = (*OSFS)(nil)
-var _ fs.StatFS = (*OSFS)(nil)
-var _ fs.ReadDirFS = (*OSFS)(nil)
-var _ fs.ReadFileFS = (*OSFS)(nil)
+var (
+	_ fs.FS         = (*OSFS)(nil)
+	_ fs.StatFS     = (*OSFS)(nil)
+	_ fs.ReadDirFS  = (*OSFS)(nil)
+	_ fs.ReadFileFS = (*OSFS)(nil)
+)

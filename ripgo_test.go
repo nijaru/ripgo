@@ -18,7 +18,7 @@ func TestSearchTypeFilter(t *testing.T) {
 
 		paths := []string{root}
 		var matchedFiles []string
-		for res, _ := range Search(context.Background(), "func", paths, WithTypes([]string{"go"})) {
+		for res := range Search(context.Background(), "func", paths, WithTypes([]string{"go"})) {
 			if res.Path != "" {
 				matchedFiles = append(matchedFiles, filepath.Base(res.Path))
 			}
@@ -43,7 +43,7 @@ func TestSearchTypeFilter(t *testing.T) {
 
 		paths := []string{root}
 		var matchedFiles []string
-		for res, _ := range Search(context.Background(), "func", paths, WithTypesNot([]string{"rust"})) {
+		for res := range Search(context.Background(), "func", paths, WithTypesNot([]string{"rust"})) {
 			if res.Path != "" {
 				matchedFiles = append(matchedFiles, filepath.Base(res.Path))
 			}
@@ -65,7 +65,7 @@ func TestSearchTypeFilter(t *testing.T) {
 
 		paths := []string{root}
 		var matchedFiles []string
-		for res, _ := range Search(context.Background(), "func", paths, WithTypes([]string{"go"}), WithTypesNot([]string{"rust"})) {
+		for res := range Search(t.Context(), "func", paths, WithTypes([]string{"go"}), WithTypesNot([]string{"rust"})) {
 			if res.Path != "" {
 				matchedFiles = append(matchedFiles, filepath.Base(res.Path))
 			}
@@ -77,6 +77,68 @@ func TestSearchTypeFilter(t *testing.T) {
 			}
 		}
 	})
+}
+
+func TestSearchOnlyMatchingEndToEnd(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, "sample.txt"), "hello 123 world 456\n")
+
+	var matches []string
+	for res, err := range Search(t.Context(), `\d+`, []string{root}, WithOnlyMatching(true)) {
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, m := range res.Matches {
+			matches = append(matches, string(m.LineBytes))
+		}
+	}
+
+	if len(matches) != 1 || matches[0] != "123" {
+		t.Errorf("expected ['123'], got %v", matches)
+	}
+}
+
+func TestSearchReplaceEndToEnd(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, "sample.txt"), "hello world\n")
+
+	var replaced []string
+	for res, err := range Search(t.Context(), `world`, []string{root}, WithReplace("universe")) {
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, m := range res.Matches {
+			replaced = append(replaced, string(m.ReplaceBytes))
+		}
+	}
+
+	if len(replaced) != 1 || replaced[0] != "hello universe" {
+		t.Errorf("expected ['hello universe'], got %v", replaced)
+	}
+}
+
+func TestSearchEarlyExitCancellation(t *testing.T) {
+	root := t.TempDir()
+	for i := 0; i < 50; i++ {
+		writeFile(t, filepath.Join(root, "dir", "file.go"), "package main\nfunc test() {}\n")
+	}
+
+	count := 0
+	for res, err := range Search(t.Context(), "func", []string{root}) {
+		if err != nil {
+			continue
+		}
+		if len(res.Matches) > 0 {
+			count++
+			if count == 1 {
+				break // Early break to test iterator cleanup and goroutine termination
+			}
+		}
+	}
+
+	if count != 1 {
+		t.Errorf("expected count 1 after early break, got %d", count)
+	}
 }
 
 func writeFile(t *testing.T, path string, content string) {

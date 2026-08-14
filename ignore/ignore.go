@@ -34,23 +34,35 @@ type Config struct {
 
 // FileTypes maps type names to glob patterns.
 var FileTypes = map[string][]string{
-	"go":     {"*.go"},
-	"rust":   {"*.rs"},
-	"python": {"*.py"},
-	"js":     {"*.js", "*.jsx"},
-	"ts":     {"*.ts", "*.tsx"},
-	"c":      {"*.c", "*.h"},
-	"cpp":    {"*.cpp", "*.hpp", "*.cc", "*.hh"},
-	"java":   {"*.java"},
-	"html":   {"*.html", "*.htm"},
-	"css":    {"*.css"},
-	"md":     {"*.md", "*.markdown"},
-	"json":   {"*.json"},
-	"yaml":   {"*.yaml", "*.yml"},
-	"toml":   {"*.toml"},
-	"sh":     {"*.sh", "*.bash"},
-	"make":   {"Makefile", "*.mk"},
-	"docker": {"Dockerfile", "*.dockerfile"},
+	"go":      {"*.go"},
+	"rust":    {"*.rs"},
+	"python":  {"*.py", "*.pyi"},
+	"js":      {"*.js", "*.jsx", "*.mjs", "*.cjs"},
+	"ts":      {"*.ts", "*.tsx", "*.mts", "*.cts"},
+	"c":       {"*.c", "*.h"},
+	"cpp":     {"*.cpp", "*.hpp", "*.cc", "*.hh", "*.cxx", "*.hxx"},
+	"zig":     {"*.zig", "*.zon"},
+	"java":    {"*.java"},
+	"kotlin":  {"*.kt", "*.kts"},
+	"scala":   {"*.scala", "*.sc"},
+	"swift":   {"*.swift"},
+	"csharp":  {"*.cs"},
+	"ruby":    {"*.rb", "*.rake", "Rakefile", "Gemfile"},
+	"php":     {"*.php", "*.phtml"},
+	"lua":     {"*.lua"},
+	"html":    {"*.html", "*.htm"},
+	"css":     {"*.css", "*.scss", "*.sass", "*.less"},
+	"md":      {"*.md", "*.markdown"},
+	"json":    {"*.json", "*.jsonc", "*.json5"},
+	"yaml":    {"*.yaml", "*.yml"},
+	"toml":    {"*.toml"},
+	"sql":     {"*.sql"},
+	"sh":      {"*.sh", "*.bash", "*.zsh"},
+	"fish":    {"*.fish"},
+	"make":    {"Makefile", "*.mk", "GNUmakefile"},
+	"docker":  {"Dockerfile", "*.dockerfile"},
+	"proto":   {"*.proto"},
+	"graphql": {"*.graphql", "*.gql"},
 }
 
 // IgnoreRule is a single parsed gitignore rule.
@@ -455,7 +467,7 @@ func (e *Engine) LoadIgnoreFile(dir string) (IgnoreContext, error) {
 	}
 
 	var rules []IgnoreRule
-	for _, name := range []string{".gitignore", ".ignore"} {
+	for _, name := range []string{".gitignore", ".ignore", ".rgignore", ".ripgoignore"} {
 		var data []byte
 		var err error
 		if e.fs != nil {
@@ -469,9 +481,6 @@ func (e *Engine) LoadIgnoreFile(dir string) (IgnoreContext, error) {
 		source := filepath.Join(dir, name)
 		rules = append(rules, parseIgnoreLines(string(data), source)...)
 	}
-
-	e.mu.Lock()
-	defer e.mu.Unlock()
 
 	set := &IgnoreSet{
 		Dir:     dir,
@@ -595,7 +604,8 @@ func (e *Engine) ShouldIgnore(path string, isDir bool, ctx ...IgnoreContext) boo
 
 	// 5. Check ignore file rules via chain.
 	var bestSet *IgnoreSet
-	if len(ctx) > 0 && ctx[0].set != nil {
+	fromWalkCtx := len(ctx) > 0 && ctx[0].set != nil
+	if fromWalkCtx {
 		bestSet = ctx[0].set
 	} else {
 		bestSet = e.lookup(path)
@@ -605,12 +615,15 @@ func (e *Engine) ShouldIgnore(path string, isDir bool, ctx ...IgnoreContext) boo
 		return false
 	}
 
-	// 6. Correct gitignore behavior: if any ancestor directory is ignored,
-	// then the file is ignored unconditionally (cannot be re-included by child).
-	for cur := bestSet; cur != nil; cur = cur.Parent {
-		if cur.Parent != nil {
-			if cur.Parent.IsIgnored(cur.DirBase, true) {
-				return true
+	// 6. If called outside walk context (e.g. standalone API or test), verify
+	// ancestor directories are not ignored. During walking, Walker already
+	// checked ancestor directories before recursing.
+	if !fromWalkCtx {
+		for cur := bestSet; cur != nil; cur = cur.Parent {
+			if cur.Parent != nil {
+				if cur.Parent.IsIgnored(cur.DirBase, true) {
+					return true
+				}
 			}
 		}
 	}

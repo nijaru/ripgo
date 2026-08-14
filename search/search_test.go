@@ -1,10 +1,13 @@
 package search
 
 import (
+	"bytes"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"testing"
 
+	"github.com/nijaru/ripgo/internal/fsref"
 	"github.com/nijaru/ripgo/pattern"
 )
 
@@ -492,32 +495,209 @@ func TestSearchACPrelfilter(t *testing.T) {
 	}
 }
 
+func TestSearchMultiline(t *testing.T) {
+	m, err := pattern.New(pattern.Config{Pattern: "first.*third", Multiline: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := NewSearcher(nil, Config{Multiline: true}, m)
+
+	content := "first line\nsecond line\nthird line\n"
+	path := createTempFile(t, content)
+
+	result, err := s.SearchPath(path, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(result.Matches) != 1 {
+		t.Fatalf("expected 1 match, got %d", len(result.Matches))
+	}
+
+	match := result.Matches[0]
+	if match.Line != 1 {
+		t.Errorf("expected match on line 1, got %d", match.Line)
+	}
+
+	// LineBytes should contain all 3 lines.
+	expectedContent := "first line\nsecond line\nthird line"
+	if string(match.LineBytes) != expectedContent {
+		t.Errorf("expected LineBytes %q, got %q", expectedContent, string(match.LineBytes))
+	}
+}
+
+func TestSearchOnlyMatching(t *testing.T) {
+	m, err := pattern.New(pattern.Config{Pattern: `[0-9]+`})
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := NewSearcher(nil, Config{OnlyMatching: true}, m)
+
+	content := "items: 123 in stock, 456 reserved\nprice: 789 dollars\n"
+	path := createTempFile(t, content)
+
+	result, err := s.SearchPath(path, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(result.Matches) != 2 {
+		t.Fatalf("expected 2 matches, got %d", len(result.Matches))
+	}
+	if string(result.Matches[0].LineBytes) != "123" {
+		t.Errorf("expected match 0 to be '123', got %q", string(result.Matches[0].LineBytes))
+	}
+	if string(result.Matches[1].LineBytes) != "789" {
+		t.Errorf("expected match 1 to be '789', got %q", string(result.Matches[1].LineBytes))
+	}
+}
+
+func TestSearchReplace(t *testing.T) {
+	m, err := pattern.New(pattern.Config{Pattern: `foo`})
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := NewSearcher(nil, Config{Replace: "BAR"}, m)
+
+	content := "before foo after\nsecond line\n"
+	path := createTempFile(t, content)
+
+	result, err := s.SearchPath(path, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(result.Matches) != 1 {
+		t.Fatalf("expected 1 match, got %d", len(result.Matches))
+	}
+	want := "before BAR after"
+	if string(result.Matches[0].ReplaceBytes) != want {
+		t.Errorf("expected ReplaceBytes %q, got %q", want, string(result.Matches[0].ReplaceBytes))
+	}
+}
+
+func TestSearchCRLF(t *testing.T) {
+	m, err := pattern.New(pattern.Config{Pattern: "hello"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := NewSearcher(nil, Config{}, m)
+
+	content := "hello world\r\nsecond line\r\n"
+	path := createTempFile(t, content)
+
+	result, err := s.SearchPath(path, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(result.Matches) != 1 {
+		t.Fatalf("expected 1 match, got %d", len(result.Matches))
+	}
+	// Line content should not have trailing \r
+	want := "hello world"
+	if string(result.Matches[0].LineBytes) != want {
+		t.Errorf("expected LineBytes %q, got %q", want, string(result.Matches[0].LineBytes))
+	}
+}
+
+func TestSearchLargeBeforeContext(t *testing.T) {
+	m, err := pattern.New(pattern.Config{Pattern: "TARGET"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := NewSearcher(nil, Config{Before: 40}, m)
+
+	var sb bytes.Buffer
+	for i := 1; i <= 50; i++ {
+		if i == 45 {
+			sb.WriteString("TARGET\n")
+		} else {
+			sb.WriteString("line\n")
+		}
+	}
+	path := createTempFile(t, sb.String())
+
+	result, err := s.SearchPath(path, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Should have 40 context entries before the match + 1 match entry = 41 entries
+	if len(result.Entries) != 41 {
+		t.Fatalf("expected 41 entries with Before=40, got %d", len(result.Entries))
+	}
+}
+
 func BenchmarkSearch(b *testing.B) {
 	// Search the real search.go file for "func" — representative workload
 	m, _ := pattern.New(pattern.Config{Pattern: "func"})
 	s := NewSearcher(nil, Config{}, m)
 
-	b.Run("literal", func(b *testing.B) {
+	b.Run("io_literal", func(b *testing.B) {
 		for b.Loop() {
 			s.SearchPath("search.go", nil)
 		}
 	})
 
-	b.Run("with_context", func(b *testing.B) {
+	// Pre-load data for pure search benchmarks
+	data, _ := os.ReadFile("search.go")
+	ref := &memRef{data: data, path: "search.go"}
+
+	b.Run("mem_literal", func(b *testing.B) {
+		for b.Loop() {
+			s.Search(ref)
+		}
+	})
+
+	b.Run("mem_with_context", func(b *testing.B) {
 		sCtx := NewSearcher(nil, Config{Before: 2, After: 2}, m)
 		for b.Loop() {
-			sCtx.SearchPath("search.go", nil)
+			sCtx.Search(ref)
+		}
+	})
+
+	b.Run("mem_multiline", func(b *testing.B) {
+		mMulti, _ := pattern.New(pattern.Config{Pattern: `func\s+\(\w+\s+\*\w+\)\s+Search`, Multiline: true})
+		sMulti := NewSearcher(nil, Config{Multiline: true}, mMulti)
+		for b.Loop() {
+			sMulti.Search(ref)
+		}
+	})
+
+	b.Run("mem_replace", func(b *testing.B) {
+		mRep, _ := pattern.New(pattern.Config{Pattern: `func`})
+		sRep := NewSearcher(nil, Config{Replace: "METHOD"}, mRep)
+		for b.Loop() {
+			res, _ := sRep.Search(ref)
+			res.Release()
 		}
 	})
 }
+
+type memRef struct {
+	fsref.Ref
+	data []byte
+	path string
+}
+
+func (m *memRef) ReadFile() ([]byte, error) { return m.data, nil }
+func (m *memRef) Mmap() ([]byte, func() error, error) {
+	return m.data, func() error { return nil }, nil
+}
+func (m *memRef) DisplayPath() string { return m.path }
+func (m *memRef) Info() fs.FileInfo   { return nil }
 
 func BenchmarkSearchRegex(b *testing.B) {
 	m, _ := pattern.New(pattern.Config{Pattern: `func\s+\w+`})
 	s := NewSearcher(nil, Config{}, m)
 
-	b.Run("regex", func(b *testing.B) {
+	data, _ := os.ReadFile("search.go")
+	ref := &memRef{data: data, path: "search.go"}
+
+	b.Run("mem_regex", func(b *testing.B) {
 		for b.Loop() {
-			s.SearchPath("search.go", nil)
+			s.Search(ref)
 		}
 	})
 }

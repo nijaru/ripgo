@@ -101,8 +101,7 @@ func TestMatchesAny_ConsecutivePatterns(t *testing.T) {
 func BenchmarkMatchesAny_3Patterns(b *testing.B) {
 	m := New([][]byte{[]byte("foo"), []byte("bar"), []byte("baz")})
 	data := []byte("the quick brown fox jumps over the lazy dog")
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		m.MatchesAny(data)
 	}
 }
@@ -110,8 +109,7 @@ func BenchmarkMatchesAny_3Patterns(b *testing.B) {
 func BenchmarkMatchesAny_3Patterns_NoMatch(b *testing.B) {
 	m := New([][]byte{[]byte("xyz"), []byte("pqr"), []byte("mno")})
 	data := []byte("the quick brown fox jumps over the lazy dog")
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		m.MatchesAny(data)
 	}
 }

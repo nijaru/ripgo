@@ -1,6 +1,9 @@
 package pattern
 
-import "testing"
+import (
+	"sync"
+	"testing"
+)
 
 func TestLiteralMatcher(t *testing.T) {
 	cfg := Config{Pattern: "hello", FixedStrings: true}
@@ -283,6 +286,36 @@ func TestLiterals_RegexWithPrefix(t *testing.T) {
 		// foo.*bar has LiteralPrefix "foo", so Literals should be nil
 		// (the single-literal path already handles this)
 		t.Fatal("expected nil when LiteralPrefix already provides a prefix")
+	}
+}
+
+func TestConcurrentMatch(t *testing.T) {
+	configs := []Config{
+		{Pattern: "hello", FixedStrings: true},
+		{Pattern: "hello", FixedStrings: true, IgnoreCase: true},
+		{Pattern: `hello\s+\w+`},
+		{Pattern: `(?<=start)\s+\w+`, Pcre2: true},
+	}
+
+	for _, cfg := range configs {
+		m, err := New(cfg)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		var wg sync.WaitGroup
+		for i := 0; i < 50; i++ {
+			wg.Add(1)
+			go func(id int) {
+				defer wg.Done()
+				line := []byte("start hello world")
+				for j := 0; j < 100; j++ {
+					m.Match(line)
+					m.MatchFile(line)
+				}
+			}(i)
+		}
+		wg.Wait()
 	}
 }
 

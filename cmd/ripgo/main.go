@@ -50,6 +50,10 @@ func run(ctx context.Context) int {
 		ripgo.WithTypesNot(cfg.Ignore.TypesNot),
 		ripgo.WithFollowSymlinks(cfg.Walk.FollowSymlinks),
 		ripgo.WithMaxFileSize(cfg.Walk.MaxFileSize),
+		ripgo.WithMultiline(cfg.Pattern.Multiline),
+		ripgo.WithWordRegexp(cfg.Pattern.WordRegexp),
+		ripgo.WithOnlyMatching(cfg.Search.OnlyMatching),
+		ripgo.WithReplace(cfg.Search.Replace),
 	}
 	prn := newPrinter(cfg)
 	var st stats.Stats
@@ -126,6 +130,7 @@ func newPrinter(cfg *config.Config) printer.Printer {
 			Column:     cfg.Column,
 			Heading:    cfg.Heading,
 			Color:      cfg.Color,
+			MaxColumns: cfg.MaxColumns,
 		})
 	}
 }

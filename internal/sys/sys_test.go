@@ -10,19 +10,19 @@ import (
 func TestGetStats(t *testing.T) {
 	tmp := t.TempDir()
 	path := filepath.Join(tmp, "test.txt")
-	
+
 	// Create file
-	if err := os.WriteFile(path, []byte("hello"), 0644); err != nil {
+	if err := os.WriteFile(path, []byte("hello"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	
+
 	info, err := os.Stat(path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	
+
 	stats := GetStats(info)
-	
+
 	// Basic sanity checks
 	if stats.ModifiedAt.IsZero() {
 		t.Error("ModifiedAt should not be zero")
