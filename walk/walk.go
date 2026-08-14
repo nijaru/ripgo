@@ -7,7 +7,6 @@ import (
 	"path/filepath"
 	"runtime"
 	"sync"
-	"unsafe"
 
 	"github.com/nijaru/ripgo/ignore"
 	"github.com/nijaru/ripgo/internal/fsref"
@@ -201,7 +200,6 @@ func (w *Walker) Run(ctx context.Context, paths []string, fileCh chan<- Entry) {
 
 func (w *Walker) walkWorker(ctx context.Context, queue *dirQueue, fileCh chan<- Entry) {
 	var subDirs []string
-	var pathBuf []byte
 
 	for {
 		dir, ok := queue.Pop(ctx)
@@ -234,10 +232,7 @@ func (w *Walker) walkWorker(ctx context.Context, queue *dirQueue, fileCh chan<- 
 			if dir == "." {
 				path = name
 			} else {
-				pathBuf = append(pathBuf[:0], dir...)
-				pathBuf = append(pathBuf, '/')
-				pathBuf = append(pathBuf, name...)
-				path = unsafe.String(unsafe.SliceData(pathBuf), len(pathBuf))
+				path = dir + "/" + name
 			}
 
 			isDir := entry.IsDir()
@@ -259,11 +254,7 @@ func (w *Walker) walkWorker(ctx context.Context, queue *dirQueue, fileCh chan<- 
 			}
 
 			if isDir {
-				dirPath := path
-				if dir != "." {
-					dirPath = dir + "/" + name
-				}
-				subDirs = append(subDirs, dirPath)
+				subDirs = append(subDirs, path)
 			} else {
 				if w.cfg.MaxFileSize > 0 && info == nil {
 					var err error
@@ -274,16 +265,11 @@ func (w *Walker) walkWorker(ctx context.Context, queue *dirQueue, fileCh chan<- 
 				}
 
 				if w.shouldSearch(path, info) {
-					filePath := path
-					if dir != "." {
-						filePath = dir + "/" + name
-					}
-
 					var ref fsref.Ref
 					if root != nil {
-						ref = fsref.NewRootedRef(root, name, filePath, info)
+						ref = fsref.NewRootedRef(root, name, path, info)
 					} else {
-						ref = fsref.NewPathRef(filePath, info, w.fsys)
+						ref = fsref.NewPathRef(path, info, w.fsys)
 					}
 
 					select {
