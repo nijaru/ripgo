@@ -5,6 +5,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/nijaru/ripgo/internal/fsref"
@@ -626,6 +627,46 @@ func TestSearchLargeBeforeContext(t *testing.T) {
 	// Should have 40 context entries before the match + 1 match entry = 41 entries
 	if len(result.Entries) != 41 {
 		t.Fatalf("expected 41 entries with Before=40, got %d", len(result.Entries))
+	}
+}
+
+func TestSearchBytes(t *testing.T) {
+	m, err := pattern.New(pattern.Config{Pattern: "hello"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := NewSearcher(nil, Config{}, m)
+
+	data := []byte("first line\nhello world\nthird line\n")
+	res, err := s.SearchBytes(data, "virtual.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Matches) != 1 {
+		t.Fatalf("expected 1 match, got %d", len(res.Matches))
+	}
+	if res.Matches[0].Line != 2 {
+		t.Errorf("expected match on line 2, got %d", res.Matches[0].Line)
+	}
+}
+
+func TestSearchReader(t *testing.T) {
+	m, err := pattern.New(pattern.Config{Pattern: "stream"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := NewSearcher(nil, Config{}, m)
+
+	r := strings.NewReader("streaming data from io.Reader\nsecond line\n")
+	res, err := s.SearchReader(r, "stream.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Matches) != 1 {
+		t.Fatalf("expected 1 match, got %d", len(res.Matches))
+	}
+	if res.Matches[0].Line != 1 {
+		t.Errorf("expected match on line 1, got %d", res.Matches[0].Line)
 	}
 }
 

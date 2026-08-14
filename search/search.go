@@ -2,6 +2,7 @@ package search
 
 import (
 	"bytes"
+	"io"
 	"io/fs"
 	"sync"
 	"time"
@@ -242,6 +243,20 @@ func (s *Searcher) searchMultiline(data []byte, result Result, mapped bool) (Res
 	return result, nil
 }
 
+// SearchBytes scans an in-memory byte slice for matches without accessing any filesystem.
+func (s *Searcher) SearchBytes(data []byte, path string) (Result, error) {
+	return s.searchData(data, Result{Path: path}, false)
+}
+
+// SearchReader reads all data from r and scans it for matches.
+func (s *Searcher) SearchReader(r io.Reader, path string) (Result, error) {
+	data, err := io.ReadAll(r)
+	if err != nil {
+		return Result{Path: path}, err
+	}
+	return s.searchData(data, Result{Path: path}, false)
+}
+
 // Search reads a file via the provided Ref and returns all matches.
 // When context lines are requested, a ring buffer retains only the last
 // <before> lines, avoiding O(N) memory for large files with few matches.
@@ -276,6 +291,10 @@ func (s *Searcher) Search(ref fsref.Ref) (Result, error) {
 		}
 	}
 
+	return s.searchData(data, result, mapped)
+}
+
+func (s *Searcher) searchData(data []byte, result Result, mapped bool) (Result, error) {
 	// Pre-filter: skip files that can't possibly match.
 	// Use Aho-Corasick for multiple literals, bytes.Contains for single.
 	if s.prefilter != nil {
