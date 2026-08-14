@@ -141,6 +141,26 @@ func TestSearchEarlyExitCancellation(t *testing.T) {
 	}
 }
 
+func TestSearchGlobIncludesSubdir(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, "src", "upper.go"), "Needle\n")
+	writeFile(t, filepath.Join(root, "src", "skip.txt"), "Needle\n")
+	writeFile(t, filepath.Join(root, "root.go"), "Needle\n")
+
+	paths := []string{root}
+	var matchedFiles []string
+	for res := range Search(t.Context(), "Needle", paths, WithGlobIncludes("*.go")) {
+		if res.Path != "" && len(res.Matches) > 0 {
+			matchedFiles = append(matchedFiles, filepath.Base(res.Path))
+		}
+	}
+
+	if len(matchedFiles) != 2 {
+		t.Fatalf("expected 2 files (upper.go and root.go), got %d: %v", len(matchedFiles), matchedFiles)
+	}
+}
+
+
 func writeFile(t *testing.T, path string, content string) {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {

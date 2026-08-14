@@ -235,3 +235,16 @@ func WithReplace(v string) Option {
 		c.Search.Replace = v
 	}
 }
+
+func WithGlobIncludes(globs ...string) Option {
+	return func(c *Config) {
+		c.Ignore.GlobIncludes = append(c.Ignore.GlobIncludes, globs...)
+	}
+}
+
+func WithGlobExcludes(globs ...string) Option {
+	return func(c *Config) {
+		c.Ignore.GlobExcludes = append(c.Ignore.GlobExcludes, globs...)
+	}
+}
+

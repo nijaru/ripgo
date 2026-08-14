@@ -553,16 +553,21 @@ func (e *Engine) ShouldIgnore(path string, isDir bool, ctx ...IgnoreContext) boo
 	}
 
 	// 2. CLI globs always take precedence
+	base := relSlash
+	if idx := strings.LastIndexByte(relSlash, '/'); idx >= 0 {
+		base = relSlash[idx+1:]
+	}
+
 	for i := range e.excludes {
-		if e.excludes[i].Match(relSlash) {
+		if e.excludes[i].Match(relSlash) || e.excludes[i].Match(base) {
 			return true
 		}
 	}
 
-	if len(e.includes) > 0 {
+	if !isDir && len(e.includes) > 0 {
 		matched := false
 		for i := range e.includes {
-			if e.includes[i].Match(relSlash) {
+			if e.includes[i].Match(relSlash) || e.includes[i].Match(base) {
 				matched = true
 				break
 			}
@@ -575,14 +580,14 @@ func (e *Engine) ShouldIgnore(path string, isDir bool, ctx ...IgnoreContext) boo
 	// 3. Type filters (files only)
 	if !isDir {
 		for i := range e.typeExcludes {
-			if e.typeExcludes[i].Match(relSlash) {
+			if e.typeExcludes[i].Match(relSlash) || e.typeExcludes[i].Match(base) {
 				return true
 			}
 		}
 		if len(e.typeIncludes) > 0 {
 			matched := false
 			for i := range e.typeIncludes {
-				if e.typeIncludes[i].Match(relSlash) {
+				if e.typeIncludes[i].Match(relSlash) || e.typeIncludes[i].Match(base) {
 					matched = true
 					break
 				}
