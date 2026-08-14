@@ -8,6 +8,7 @@ import (
 	"context"
 	"io/fs"
 	"iter"
+	"runtime"
 	"sync"
 
 	"github.com/nijaru/ripgo/ignore"
@@ -75,7 +76,7 @@ func Search(ctx context.Context, patternStr string, paths []string, opts ...Opti
 		// Start scan workers
 		workers := cfg.Walk.Threads
 		if workers <= 0 {
-			workers = 4
+			workers = runtime.GOMAXPROCS(0)
 		}
 
 		for range workers {

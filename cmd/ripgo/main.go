@@ -89,6 +89,10 @@ func run(ctx context.Context) int {
 		fmt.Fprintf(os.Stderr, "Error finishing printer: %v\n", err)
 	}
 
+	if st.TotalMatches() == 0 && len(results) == 0 {
+		return 1
+	}
+
 	return 0
 }
 
