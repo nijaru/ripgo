@@ -26,11 +26,52 @@ type Config struct {
 	FollowSymlinks bool
 	// MaxFileSize skips files larger than this. 0 means unlimited.
 	MaxFileSize int64
+	// EmitDirs emits directory entries in addition to files. Supplied directory
+	// roots are traversal anchors and are not emitted.
+	EmitDirs bool
 }
 
-// Entry represents a file found during traversal.
+// EntryKind identifies the kind of filesystem entry.
+type EntryKind uint8
+
+const (
+	// EntryFile identifies a non-directory entry.
+	EntryFile EntryKind = iota
+	// EntryDirectory identifies a directory entry.
+	EntryDirectory
+)
+
+// Entry represents a filesystem entry found during traversal.
 type Entry struct {
+	// File is the capability-backed file reference for file entries. It is nil
+	// for directory entries.
 	File fsref.Ref
+	// Path is the stable user-facing path.
+	Path string
+	// Info is the metadata discovered during walking.
+	Info fs.FileInfo
+	// Kind identifies whether this is a file or directory.
+	Kind EntryKind
+	// Depth is relative to the supplied traversal root. Explicit file targets
+	// have depth zero; children of a directory root start at depth one.
+	Depth int
+}
+
+// DisplayPath returns the stable user-facing path for the entry.
+func (e Entry) DisplayPath() string {
+	if e.Path != "" {
+		return e.Path
+	}
+	if e.File != nil {
+		return e.File.DisplayPath()
+	}
+	return ""
+}
+
+// dirWork identifies a directory and its depth relative to a traversal root.
+type dirWork struct {
+	path  string
+	depth int
 }
 
 // dirQueue manages concurrent work distribution among walk workers without
@@ -39,20 +80,20 @@ type Entry struct {
 type dirQueue struct {
 	mu     sync.Mutex
 	cond   *sync.Cond
-	dirs   []string
+	dirs   []dirWork
 	active int
 	closed bool
 }
 
 func newDirQueue(initialCap int) *dirQueue {
 	q := &dirQueue{
-		dirs: make([]string, 0, initialCap),
+		dirs: make([]dirWork, 0, initialCap),
 	}
 	q.cond = sync.NewCond(&q.mu)
 	return q
 }
 
-func (q *dirQueue) Push(dirs ...string) {
+func (q *dirQueue) Push(dirs ...dirWork) {
 	if len(dirs) == 0 {
 		return
 	}
@@ -65,7 +106,7 @@ func (q *dirQueue) Push(dirs ...string) {
 	q.cond.Broadcast()
 }
 
-func (q *dirQueue) Pop(ctx context.Context) (string, bool) {
+func (q *dirQueue) Pop(ctx context.Context) (dirWork, bool) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 
@@ -73,7 +114,7 @@ func (q *dirQueue) Pop(ctx context.Context) (string, bool) {
 		if q.closed || q.active == 0 || ctx.Err() != nil {
 			q.closed = true
 			q.cond.Broadcast()
-			return "", false
+			return dirWork{}, false
 		}
 		q.cond.Wait()
 	}
@@ -81,7 +122,7 @@ func (q *dirQueue) Pop(ctx context.Context) (string, bool) {
 	if ctx.Err() != nil {
 		q.closed = true
 		q.cond.Broadcast()
-		return "", false
+		return dirWork{}, false
 	}
 
 	// LIFO pop for depth-first traversal
@@ -109,7 +150,8 @@ func (q *dirQueue) Close() {
 	q.cond.Broadcast()
 }
 
-// Walker performs parallel directory traversal, emitting file entries.
+// Walker performs parallel directory traversal, emitting file and optional
+// directory entries.
 type Walker struct {
 	fsys         fs.FS
 	cfg          Config
@@ -136,7 +178,7 @@ func NewWalker(fsys fs.FS, cfg Config, engine *ignore.Engine) *Walker {
 	}
 }
 
-// Run walks paths and sends file entries to fileCh.
+// Run walks paths and sends entries to fileCh.
 // fileCh is closed when all work is done.
 func (w *Walker) Run(ctx context.Context, paths []string, fileCh chan<- Entry) {
 	defer close(fileCh)
@@ -147,7 +189,7 @@ func (w *Walker) Run(ctx context.Context, paths []string, fileCh chan<- Entry) {
 	})
 	defer stopAfter()
 
-	var initialDirs []string
+	var initialDirs []dirWork
 	for _, p := range paths {
 		p = filepath.ToSlash(filepath.Clean(p))
 
@@ -170,13 +212,19 @@ func (w *Walker) Run(ctx context.Context, paths []string, fileCh chan<- Entry) {
 				select {
 				case <-ctx.Done():
 					return
-				case fileCh <- Entry{File: ref}:
+				case fileCh <- Entry{
+					File:  ref,
+					Path:  p,
+					Info:  info,
+					Kind:  EntryFile,
+					Depth: 0,
+				}:
 				}
 			}
 			continue
 		}
 
-		initialDirs = append(initialDirs, p)
+		initialDirs = append(initialDirs, dirWork{path: p})
 	}
 
 	if len(initialDirs) == 0 {
@@ -199,13 +247,14 @@ func (w *Walker) Run(ctx context.Context, paths []string, fileCh chan<- Entry) {
 }
 
 func (w *Walker) walkWorker(ctx context.Context, queue *dirQueue, fileCh chan<- Entry) {
-	var subDirs []string
+	var subDirs []dirWork
 
 	for {
-		dir, ok := queue.Pop(ctx)
+		work, ok := queue.Pop(ctx)
 		if !ok {
 			return
 		}
+		dir := work.path
 
 		entries, err := fs.ReadDir(w.fsys, dir)
 		if err != nil {
@@ -241,7 +290,6 @@ func (w *Walker) walkWorker(ctx context.Context, queue *dirQueue, fileCh chan<- 
 				if !w.cfg.FollowSymlinks {
 					continue
 				}
-				var err error
 				info, err = fs.Stat(w.fsys, path)
 				if err != nil {
 					continue
@@ -253,32 +301,57 @@ func (w *Walker) walkWorker(ctx context.Context, queue *dirQueue, fileCh chan<- 
 				continue
 			}
 
+			depth := work.depth + 1
 			if isDir {
-				subDirs = append(subDirs, path)
-			} else {
-				if w.cfg.MaxFileSize > 0 && info == nil {
-					var err error
-					info, err = entry.Info()
-					if err != nil {
-						continue
+				if w.cfg.EmitDirs {
+					if info == nil {
+						info, _ = entry.Info()
 					}
-				}
-
-				if w.shouldSearch(path, info) {
-					var ref fsref.Ref
-					if root != nil {
-						ref = fsref.NewRootedRef(root, name, path, info)
-					} else {
-						ref = fsref.NewPathRef(path, info, w.fsys)
-					}
-
 					select {
 					case <-ctx.Done():
 						queue.Done()
 						return
-					case fileCh <- Entry{File: ref}:
+					case fileCh <- Entry{
+						Path:  path,
+						Info:  info,
+						Kind:  EntryDirectory,
+						Depth: depth,
+					}:
 					}
 				}
+				subDirs = append(subDirs, dirWork{path: path, depth: depth})
+				continue
+			}
+
+			if info == nil {
+				info, err = entry.Info()
+				if err != nil && w.cfg.MaxFileSize > 0 {
+					continue
+				}
+			}
+
+			if !w.shouldSearch(path, info) {
+				continue
+			}
+
+			var ref fsref.Ref
+			if root != nil {
+				ref = fsref.NewRootedRef(root, name, path, info)
+			} else {
+				ref = fsref.NewPathRef(path, info, w.fsys)
+			}
+
+			select {
+			case <-ctx.Done():
+				queue.Done()
+				return
+			case fileCh <- Entry{
+				File:  ref,
+				Path:  path,
+				Info:  info,
+				Kind:  EntryFile,
+				Depth: depth,
+			}:
 			}
 		}
 

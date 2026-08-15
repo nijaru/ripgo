@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"sort"
 	"testing"
+	"testing/fstest"
 
 	"github.com/nijaru/ripgo/ignore"
 )
@@ -112,13 +113,20 @@ func TestWalkerExplicitFile(t *testing.T) {
 
 	go w.Run(ctx, []string{filePath}, fileCh)
 
-	var files []string
+	var entries []Entry
 	for e := range fileCh {
-		files = append(files, e.File.DisplayPath())
+		entries = append(entries, e)
 	}
 
-	if len(files) != 1 || files[0] != filePath {
-		t.Fatalf("got %v, want [%s]", files, filePath)
+	if len(entries) != 1 || entries[0].File.DisplayPath() != filePath {
+		t.Fatalf("got %v, want [%s]", entries, filePath)
+	}
+	entry := entries[0]
+	if entry.Path != filePath || entry.Kind != EntryFile || entry.Depth != 0 {
+		t.Fatalf("entry metadata = %+v, want file path=%q depth=0", entry, filePath)
+	}
+	if entry.Info == nil || entry.Info.IsDir() {
+		t.Fatalf("entry info = %v, want regular-file metadata", entry.Info)
 	}
 }
 
@@ -131,6 +139,135 @@ func TestWalkerEmptyDir(t *testing.T) {
 
 	if len(files) != 0 {
 		t.Fatalf("got %v, want empty", files)
+	}
+}
+
+func TestWalkerEmitsDirectoriesAndMetadata(t *testing.T) {
+	root, _ := setupTestDir(t, map[string]string{
+		"a.txt":            "root",
+		"sub/b.go":         "package sub",
+		"sub/nested/c.txt": "nested",
+	})
+
+	engine := newTestEngine(t, ignore.Config{NoIgnore: true, Hidden: true})
+	w := NewWalker(nil, Config{Threads: 2, EmitDirs: true}, engine)
+	fileCh := make(chan Entry, 256)
+	go w.Run(t.Context(), []string{root}, fileCh)
+
+	entries := make(map[string]Entry)
+	for entry := range fileCh {
+		rel, err := filepath.Rel(root, entry.Path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		entries[filepath.ToSlash(rel)] = entry
+	}
+
+	wantDepth := map[string]int{
+		"a.txt":            1,
+		"sub":              1,
+		"sub/b.go":         2,
+		"sub/nested":       2,
+		"sub/nested/c.txt": 3,
+	}
+	if len(entries) != len(wantDepth) {
+		t.Fatalf("got %d entries, want %d: %v", len(entries), len(wantDepth), entries)
+	}
+
+	for path, depth := range wantDepth {
+		entry, ok := entries[path]
+		if !ok {
+			t.Errorf("missing entry %q", path)
+			continue
+		}
+		if entry.Depth != depth {
+			t.Errorf("%s depth = %d, want %d", path, entry.Depth, depth)
+		}
+		if entry.DisplayPath() != entry.Path {
+			t.Errorf("%s DisplayPath = %q, want %q", path, entry.DisplayPath(), entry.Path)
+		}
+		if entry.Info == nil {
+			t.Errorf("%s has no metadata", path)
+			continue
+		}
+
+		isDir := entry.Kind == EntryDirectory
+		if entry.Info.IsDir() != isDir {
+			t.Errorf("%s Info.IsDir() = %t, kind directory = %t", path, entry.Info.IsDir(), isDir)
+		}
+		if isDir {
+			if entry.File != nil {
+				t.Errorf("directory %s has a file reference", path)
+			}
+		} else if entry.File == nil {
+			t.Errorf("file %s has no file reference", path)
+		}
+	}
+}
+
+func TestWalkerDoesNotEmitIgnoredDirectories(t *testing.T) {
+	root, _ := setupTestDir(t, map[string]string{
+		".gitignore":  "dist/\n",
+		"dist/out.js": "built",
+		"src/main.go": "package main",
+	})
+
+	engine := newTestEngine(t, ignore.Config{Hidden: true})
+	w := NewWalker(nil, Config{Threads: 1, EmitDirs: true}, engine)
+	fileCh := make(chan Entry, 256)
+	go w.Run(t.Context(), []string{root}, fileCh)
+
+	paths := make(map[string]struct{})
+	for entry := range fileCh {
+		rel, err := filepath.Rel(root, entry.Path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		paths[filepath.ToSlash(rel)] = struct{}{}
+	}
+
+	if _, ok := paths["dist"]; ok {
+		t.Fatal("ignored directory was emitted")
+	}
+	if _, ok := paths["dist/out.js"]; ok {
+		t.Fatal("file in ignored directory was emitted")
+	}
+	if _, ok := paths["src"]; !ok {
+		t.Fatal("non-ignored directory was not emitted")
+	}
+}
+
+func TestWalkerVirtualFSMetadata(t *testing.T) {
+	fsys := fstest.MapFS{
+		"dir/file.txt": &fstest.MapFile{Data: []byte("content")},
+	}
+	engine, err := ignore.NewEngineFS(fsys, ignore.Config{NoIgnore: true, Hidden: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	w := NewWalker(fsys, Config{Threads: 1, EmitDirs: true}, engine)
+	fileCh := make(chan Entry, 16)
+	go w.Run(t.Context(), []string{"."}, fileCh)
+
+	var foundFile, foundDir bool
+	for entry := range fileCh {
+		switch entry.Path {
+		case "dir":
+			foundDir = true
+			if entry.Kind != EntryDirectory || entry.Info == nil || !entry.Info.IsDir() {
+				t.Errorf("invalid directory entry: %+v", entry)
+			}
+		case "dir/file.txt":
+			foundFile = true
+			if entry.Kind != EntryFile || entry.Info == nil || entry.Info.IsDir() || entry.File == nil {
+				t.Errorf("invalid file entry: %+v", entry)
+			}
+		}
+	}
+
+	if !foundDir || !foundFile {
+		t.Fatalf("got directory=%t file=%t, want both", foundDir, foundFile)
 	}
 }
 
