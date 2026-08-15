@@ -2,11 +2,13 @@ package walk
 
 import (
 	"context"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"sort"
 	"testing"
 	"testing/fstest"
+	"time"
 
 	"github.com/nijaru/ripgo/ignore"
 )
@@ -56,6 +58,18 @@ func collectFiles(t *testing.T, w *Walker, root string) []string {
 	}
 	sort.Strings(files)
 	return files
+}
+
+func collectEntries(t *testing.T, w *Walker, paths ...string) []Entry {
+	t.Helper()
+	fileCh := make(chan Entry, 256)
+	go w.Run(t.Context(), paths, fileCh)
+
+	var entries []Entry
+	for entry := range fileCh {
+		entries = append(entries, entry)
+	}
+	return entries
 }
 
 // --- Basic traversal ---
@@ -268,6 +282,181 @@ func TestWalkerVirtualFSMetadata(t *testing.T) {
 
 	if !foundDir || !foundFile {
 		t.Fatalf("got directory=%t file=%t, want both", foundDir, foundFile)
+	}
+}
+
+func TestWalkerDepthLimits(t *testing.T) {
+	root, _ := setupTestDir(t, map[string]string{
+		"a.txt":        "root",
+		"one/b.txt":    "one",
+		"one/two/c.md": "two",
+	})
+
+	engine := newTestEngine(t, ignore.Config{NoIgnore: true, Hidden: true})
+
+	t.Run("max depth one", func(t *testing.T) {
+		w := NewWalker(nil, Config{Threads: 1, EmitDirs: true, MaxDepth: 1}, engine)
+		entries := collectEntries(t, w, root)
+		paths := make(map[string]int)
+		for _, entry := range entries {
+			rel, err := filepath.Rel(root, entry.Path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			paths[filepath.ToSlash(rel)] = entry.Depth
+		}
+
+		want := map[string]int{"a.txt": 1, "one": 1}
+		if len(paths) != len(want) {
+			t.Fatalf("got %v, want %v", paths, want)
+		}
+		for path, depth := range want {
+			if paths[path] != depth {
+				t.Errorf("%s depth = %d, want %d", path, paths[path], depth)
+			}
+		}
+	})
+
+	t.Run("minimum and maximum depth", func(t *testing.T) {
+		w := NewWalker(nil, Config{
+			Threads:     1,
+			EmitDirs:    true,
+			MinDepth:    2,
+			MaxDepth:    2,
+			MaxDepthSet: true,
+		}, engine)
+		entries := collectEntries(t, w, root)
+		paths := make(map[string]int)
+		for _, entry := range entries {
+			rel, err := filepath.Rel(root, entry.Path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			paths[filepath.ToSlash(rel)] = entry.Depth
+		}
+
+		want := map[string]int{"one/b.txt": 2, "one/two": 2}
+		if len(paths) != len(want) {
+			t.Fatalf("got %v, want %v", paths, want)
+		}
+		for path, depth := range want {
+			if paths[path] != depth {
+				t.Errorf("%s depth = %d, want %d", path, paths[path], depth)
+			}
+		}
+	})
+
+	t.Run("zero depth", func(t *testing.T) {
+		w := NewWalker(nil, Config{Threads: 1, EmitDirs: true, MaxDepthSet: true}, engine)
+		if entries := collectEntries(t, w, root); len(entries) != 0 {
+			t.Fatalf("got %d entries at max depth zero, want none", len(entries))
+		}
+
+		file := filepath.Join(root, "a.txt")
+		if entries := collectEntries(t, w, file); len(entries) != 1 || entries[0].Depth != 0 {
+			t.Fatalf("explicit file entries = %+v, want one depth-zero entry", entries)
+		}
+	})
+}
+
+func TestWalkerDepthResetsPerRoot(t *testing.T) {
+	root1 := t.TempDir()
+	root2 := t.TempDir()
+	for _, root := range []string{root1, root2} {
+		if err := os.Mkdir(filepath.Join(root, "child"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(root, "child", "file.txt"), []byte("content"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	engine := newTestEngine(t, ignore.Config{NoIgnore: true, Hidden: true})
+	w := NewWalker(nil, Config{Threads: 2, EmitDirs: true, MaxDepth: 1}, engine)
+	entries := collectEntries(t, w, root1, root2)
+
+	if len(entries) != 2 {
+		t.Fatalf("got %d entries, want two root-level directories: %+v", len(entries), entries)
+	}
+	for _, entry := range entries {
+		if entry.Kind != EntryDirectory || entry.Depth != 1 || filepath.Base(entry.Path) != "child" {
+			t.Errorf("entry = %+v, want child directory at depth one", entry)
+		}
+	}
+}
+
+func TestWalkerFollowSymlinksIsCycleSafe(t *testing.T) {
+	root, _ := setupTestDir(t, map[string]string{
+		"real/file.txt": "content",
+	})
+	if err := os.Symlink("..", filepath.Join(root, "real", "parent")); err != nil {
+		t.Skipf("symlinks not supported: %v", err)
+	}
+
+	engine := newTestEngine(t, ignore.Config{NoIgnore: true, Hidden: true})
+	w := NewWalker(nil, Config{Threads: 2, FollowSymlinks: true, EmitDirs: true}, engine)
+	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Second)
+	defer cancel()
+	fileCh := make(chan Entry, 256)
+	go w.Run(ctx, []string{root}, fileCh)
+
+	counts := make(map[string]int)
+	for {
+		select {
+		case entry, ok := <-fileCh:
+			if !ok {
+				if counts["real/parent"] != 1 {
+					t.Fatalf("cycle link count = %d, want one: %v", counts["real/parent"], counts)
+				}
+				if counts["real/parent/real"] != 0 {
+					t.Fatalf("cycle was traversed repeatedly: %v", counts)
+				}
+				return
+			}
+			rel, err := filepath.Rel(root, entry.Path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			counts[filepath.ToSlash(rel)]++
+		case <-ctx.Done():
+			t.Fatalf("walker did not terminate for symlink cycle: %v", ctx.Err())
+		}
+	}
+}
+
+func TestWalkerVirtualFollowSymlinkCycleIsSafe(t *testing.T) {
+	fsys := fstest.MapFS{
+		"real/file.txt": &fstest.MapFile{Data: []byte("content")},
+		"real/parent":   &fstest.MapFile{Mode: fs.ModeSymlink, Data: []byte("..")},
+	}
+	engine, err := ignore.NewEngineFS(fsys, ignore.Config{NoIgnore: true, Hidden: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	w := NewWalker(fsys, Config{Threads: 2, FollowSymlinks: true, EmitDirs: true}, engine)
+	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Second)
+	defer cancel()
+	fileCh := make(chan Entry, 256)
+	go w.Run(ctx, []string{"."}, fileCh)
+
+	counts := make(map[string]int)
+	for {
+		select {
+		case entry, ok := <-fileCh:
+			if !ok {
+				if counts["real/parent"] != 1 {
+					t.Fatalf("cycle link count = %d, want one: %v", counts["real/parent"], counts)
+				}
+				if counts["real/parent/real"] != 0 {
+					t.Fatalf("cycle was traversed repeatedly: %v", counts)
+				}
+				return
+			}
+			counts[entry.Path]++
+		case <-ctx.Done():
+			t.Fatalf("walker did not terminate for virtual symlink cycle: %v", ctx.Err())
+		}
 	}
 }
 

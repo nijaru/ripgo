@@ -64,5 +64,22 @@ func TestWalkerSymlinks(t *testing.T) {
 				t.Errorf("file[%d] = %q, want %q", i, files[i], want[i])
 			}
 		}
+
+		entries := collectEntries(t, NewWalker(nil, Config{
+			FollowSymlinks: true,
+			EmitDirs:       true,
+		}, engine), root)
+		for _, entry := range entries {
+			switch entry.Path {
+			case linkDir:
+				if !entry.Symlink || entry.Kind != EntryDirectory {
+					t.Errorf("directory symlink entry = %+v, want symlink directory", entry)
+				}
+			case linkFile:
+				if !entry.Symlink || entry.Kind != EntryFile {
+					t.Errorf("file symlink entry = %+v, want symlink file", entry)
+				}
+			}
+		}
 	})
 }

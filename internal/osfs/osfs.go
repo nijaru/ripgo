@@ -83,6 +83,21 @@ func (f *OSFS) Stat(name string) (fs.FileInfo, error) {
 	return os.Stat(name)
 }
 
+func (f *OSFS) Lstat(name string) (fs.FileInfo, error) {
+	return os.Lstat(f.hostPath(name))
+}
+
+func (f *OSFS) ReadLink(name string) (string, error) {
+	return os.Readlink(f.hostPath(name))
+}
+
+func (f *OSFS) hostPath(name string) string {
+	if f.root == nil {
+		return name
+	}
+	return filepath.Join(string(filepath.Separator), f.rel(name))
+}
+
 func (f *OSFS) ReadDir(name string) ([]fs.DirEntry, error) {
 	if f.root != nil {
 		return fs.ReadDir(f.root.FS(), f.rel(name))
@@ -117,6 +132,7 @@ func (f *OSFS) OpenRoot(dir string) (*fsref.Root, error) {
 var (
 	_ fs.FS         = (*OSFS)(nil)
 	_ fs.StatFS     = (*OSFS)(nil)
+	_ fs.ReadLinkFS = (*OSFS)(nil)
 	_ fs.ReadDirFS  = (*OSFS)(nil)
 	_ fs.ReadFileFS = (*OSFS)(nil)
 )

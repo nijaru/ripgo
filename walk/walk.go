@@ -4,8 +4,10 @@ package walk
 import (
 	"context"
 	"io/fs"
+	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"sync"
 
 	"github.com/nijaru/ripgo/ignore"
@@ -29,6 +31,14 @@ type Config struct {
 	// EmitDirs emits directory entries in addition to files. Supplied directory
 	// roots are traversal anchors and are not emitted.
 	EmitDirs bool
+	// MinDepth filters emitted entries below this root-relative depth.
+	MinDepth int
+	// MaxDepth filters emitted entries deeper than this root-relative depth.
+	// A non-zero value enables the limit; MaxDepthSet is required for an
+	// explicit zero-depth limit.
+	MaxDepth int
+	// MaxDepthSet enables MaxDepth when it is zero.
+	MaxDepthSet bool
 }
 
 // EntryKind identifies the kind of filesystem entry.
@@ -52,6 +62,9 @@ type Entry struct {
 	Info fs.FileInfo
 	// Kind identifies whether this is a file or directory.
 	Kind EntryKind
+	// Symlink reports whether the entry path itself is a symbolic link. Info
+	// describes the link target when symlink following is enabled.
+	Symlink bool
 	// Depth is relative to the supplied traversal root. Explicit file targets
 	// have depth zero; children of a directory root start at depth one.
 	Depth int
@@ -69,9 +82,16 @@ func (e Entry) DisplayPath() string {
 }
 
 // dirWork identifies a directory and its depth relative to a traversal root.
+type dirIdentity struct {
+	path string
+	info fs.FileInfo
+}
+
 type dirWork struct {
-	path  string
-	depth int
+	path      string
+	depth     int
+	identity  dirIdentity
+	ancestors []dirIdentity
 }
 
 // dirQueue manages concurrent work distribution among walk workers without
@@ -178,6 +198,127 @@ func NewWalker(fsys fs.FS, cfg Config, engine *ignore.Engine) *Walker {
 	}
 }
 
+func (w *Walker) maxDepthSet() bool {
+	return w.cfg.MaxDepthSet || w.cfg.MaxDepth != 0
+}
+
+func (w *Walker) shouldEmit(depth int) bool {
+	if depth < w.cfg.MinDepth {
+		return false
+	}
+	return !w.maxDepthSet() || depth <= w.cfg.MaxDepth
+}
+
+func (w *Walker) shouldDescend(depth int) bool {
+	return !w.maxDepthSet() || depth < w.cfg.MaxDepth
+}
+
+func (w *Walker) directoryIdentity(path string, info fs.FileInfo) dirIdentity {
+	return dirIdentity{
+		path: canonicalPath(w.fsys, path),
+		info: info,
+	}
+}
+
+func (w *Walker) nextDirWork(parent dirWork, path string, depth int, info fs.FileInfo) (dirWork, bool) {
+	if !w.cfg.FollowSymlinks {
+		return dirWork{path: path, depth: depth}, true
+	}
+
+	identity := w.directoryIdentity(path, info)
+	if sameDirectory(parent.identity, identity) {
+		return dirWork{}, false
+	}
+	for _, ancestor := range parent.ancestors {
+		if sameDirectory(ancestor, identity) {
+			return dirWork{}, false
+		}
+	}
+
+	ancestors := make([]dirIdentity, len(parent.ancestors)+1)
+	copy(ancestors, parent.ancestors)
+	ancestors[len(parent.ancestors)] = parent.identity
+	return dirWork{
+		path:      path,
+		depth:     depth,
+		identity:  identity,
+		ancestors: ancestors,
+	}, true
+}
+
+func sameDirectory(a, b dirIdentity) bool {
+	if a.info != nil && b.info != nil && a.info.Sys() != nil && b.info.Sys() != nil && os.SameFile(a.info, b.info) {
+		return true
+	}
+	return a.path != "" && a.path == b.path
+}
+
+func canonicalPath(fsys fs.FS, name string) string {
+	current := filepath.ToSlash(filepath.Clean(name))
+	if _, ok := fsys.(fs.ReadLinkFS); !ok {
+		return current
+	}
+
+	// Resolve symlinks in every path component so a link to an ancestor cannot
+	// hide a cycle behind a later, ordinary directory component.
+	seen := make(map[string]struct{})
+	for {
+		if _, ok := seen[current]; ok {
+			return current
+		}
+		seen[current] = struct{}{}
+		components := strings.Split(current, "/")
+		prefix := ""
+		start := 0
+		if strings.HasPrefix(current, "/") {
+			prefix = "/"
+			start = 1
+		}
+
+		changed := false
+		for i := start; i < len(components); i++ {
+			if components[i] == "" || components[i] == "." {
+				continue
+			}
+			if prefix == "" || prefix == "/" {
+				prefix += components[i]
+			} else {
+				prefix += "/" + components[i]
+			}
+
+			target, err := fs.ReadLink(fsys, prefix)
+			if err != nil {
+				continue
+			}
+
+			resolved := resolveLinkPath(prefix, target)
+			if suffix := strings.Join(components[i+1:], "/"); suffix != "" {
+				resolved += "/" + suffix
+			}
+			current = filepath.ToSlash(filepath.Clean(filepath.FromSlash(resolved)))
+			changed = true
+			break
+		}
+		if !changed {
+			return current
+		}
+	}
+}
+
+func resolveLinkPath(linkPath, target string) string {
+	linkPath = filepath.FromSlash(linkPath)
+	target = filepath.FromSlash(target)
+	if !filepath.IsAbs(target) {
+		target = filepath.Join(filepath.Dir(linkPath), target)
+	}
+	return filepath.ToSlash(filepath.Clean(target))
+}
+
+func (w *Walker) isSymlink(path string) bool {
+	_, err := fs.ReadLink(w.fsys, path)
+	return err == nil
+}
+
 // Run walks paths and sends entries to fileCh.
 // fileCh is closed when all work is done.
 func (w *Walker) Run(ctx context.Context, paths []string, fileCh chan<- Entry) {
@@ -196,7 +337,7 @@ func (w *Walker) Run(ctx context.Context, paths []string, fileCh chan<- Entry) {
 		info, err := fs.Stat(w.fsys, p)
 		if err == nil && !info.IsDir() {
 			// Explicit file target: search it
-			if w.shouldSearch(p, info) {
+			if w.shouldSearch(p, info) && w.shouldEmit(0) {
 				var ref fsref.Ref
 				dir := filepath.Dir(p)
 				base := filepath.Base(p)
@@ -213,18 +354,23 @@ func (w *Walker) Run(ctx context.Context, paths []string, fileCh chan<- Entry) {
 				case <-ctx.Done():
 					return
 				case fileCh <- Entry{
-					File:  ref,
-					Path:  p,
-					Info:  info,
-					Kind:  EntryFile,
-					Depth: 0,
+					File:    ref,
+					Path:    p,
+					Info:    info,
+					Kind:    EntryFile,
+					Symlink: w.isSymlink(p),
+					Depth:   0,
 				}:
 				}
 			}
 			continue
 		}
 
-		initialDirs = append(initialDirs, dirWork{path: p})
+		work := dirWork{path: p}
+		if w.cfg.FollowSymlinks {
+			work.identity = w.directoryIdentity(p, info)
+		}
+		initialDirs = append(initialDirs, work)
 	}
 
 	if len(initialDirs) == 0 {
@@ -303,23 +449,30 @@ func (w *Walker) walkWorker(ctx context.Context, queue *dirQueue, fileCh chan<- 
 
 			depth := work.depth + 1
 			if isDir {
-				if w.cfg.EmitDirs {
-					if info == nil {
-						info, _ = entry.Info()
-					}
+				if info == nil && (w.cfg.EmitDirs || w.cfg.FollowSymlinks) {
+					info, _ = entry.Info()
+				}
+				if w.cfg.EmitDirs && w.shouldEmit(depth) {
 					select {
 					case <-ctx.Done():
 						queue.Done()
 						return
 					case fileCh <- Entry{
-						Path:  path,
-						Info:  info,
-						Kind:  EntryDirectory,
-						Depth: depth,
+						Path:    path,
+						Info:    info,
+						Kind:    EntryDirectory,
+						Symlink: entry.Type()&fs.ModeSymlink != 0,
+						Depth:   depth,
 					}:
 					}
 				}
-				subDirs = append(subDirs, dirWork{path: path, depth: depth})
+				if !w.shouldDescend(depth) {
+					continue
+				}
+				child, ok := w.nextDirWork(work, path, depth, info)
+				if ok {
+					subDirs = append(subDirs, child)
+				}
 				continue
 			}
 
@@ -330,7 +483,7 @@ func (w *Walker) walkWorker(ctx context.Context, queue *dirQueue, fileCh chan<- 
 				}
 			}
 
-			if !w.shouldSearch(path, info) {
+			if !w.shouldSearch(path, info) || !w.shouldEmit(depth) {
 				continue
 			}
 
@@ -346,11 +499,12 @@ func (w *Walker) walkWorker(ctx context.Context, queue *dirQueue, fileCh chan<- 
 				queue.Done()
 				return
 			case fileCh <- Entry{
-				File:  ref,
-				Path:  path,
-				Info:  info,
-				Kind:  EntryFile,
-				Depth: depth,
+				File:    ref,
+				Path:    path,
+				Info:    info,
+				Kind:    EntryFile,
+				Symlink: entry.Type()&fs.ModeSymlink != 0,
+				Depth:   depth,
 			}:
 			}
 		}

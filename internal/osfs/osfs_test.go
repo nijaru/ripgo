@@ -3,6 +3,7 @@ package osfs
 import (
 	"bytes"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"testing"
@@ -64,6 +65,29 @@ func TestOSFS(t *testing.T) {
 		}
 		if !bytes.Equal(data, want) {
 			t.Fatalf("ReadFile() = %q, want %q", data, want)
+		}
+	})
+
+	t.Run("symlink metadata", func(t *testing.T) {
+		link := filepath.Join(dir, "sub-link")
+		if err := os.Symlink("sub", link); err != nil {
+			t.Skipf("symlinks not supported: %v", err)
+		}
+
+		target, err := fsys.ReadLink(link)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if target != "sub" {
+			t.Fatalf("ReadLink() = %q, want %q", target, "sub")
+		}
+
+		info, err := fsys.Lstat(link)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if info.Mode()&fs.ModeSymlink == 0 {
+			t.Fatalf("Lstat().Mode() = %v, want symlink", info.Mode())
 		}
 	})
 
