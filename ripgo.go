@@ -1,16 +1,20 @@
-// Package ripgo provides a high-level API for searching files.
+// Package ripgo provides high-level APIs for searching file contents and
+// finding filesystem paths.
 //
-// It orchestrates the walk, ignore, pattern, and search packages into a
-// simple, unified interface for library consumers.
+// It orchestrates the walk, ignore, pattern, search, and find packages into
+// simple, unified interfaces for library consumers.
 package ripgo
 
 import (
 	"context"
 	"io/fs"
 	"iter"
+	"path"
+	"path/filepath"
 	"runtime"
 	"sync"
 
+	findpkg "github.com/nijaru/ripgo/find"
 	"github.com/nijaru/ripgo/ignore"
 	"github.com/nijaru/ripgo/internal/osfs"
 	"github.com/nijaru/ripgo/pattern"
@@ -125,6 +129,208 @@ func Search(ctx context.Context, patternStr string, paths []string, opts ...Opti
 			}
 		}
 	}
+}
+
+// Find streams matching paths from the supplied roots without reading file
+// contents. It returns an iterator of (Result, error). A missing path or
+// traversal failure is yielded as an error; the iterator stops when the caller
+// stops yielding.
+func Find(ctx context.Context, pattern string, paths []string, opts ...FindOption) iter.Seq2[findpkg.Result, error] {
+	cfg := DefaultFindConfig(pattern)
+	for _, opt := range opts {
+		opt(&cfg)
+	}
+
+	return func(yield func(findpkg.Result, error) bool) {
+		filter, err := findpkg.NewFilter(cfg)
+		if err != nil {
+			yield(findpkg.Result{}, err)
+			return
+		}
+
+		fsys := cfg.FS
+		var osfsys *osfs.OSFS
+		if fsys == nil {
+			osfsys = osfs.New()
+			fsys = osfsys
+			defer osfsys.Close()
+		}
+
+		engine, err := ignore.NewEngineFS(fsys, cfg.IgnoreConfig())
+		if err != nil {
+			yield(findpkg.Result{}, err)
+			return
+		}
+
+		roots := append([]string(nil), paths...)
+		if len(roots) == 0 {
+			roots = []string{"."}
+		}
+
+		walker := walk.NewWalker(fsys, cfg.WalkerConfig(), engine)
+		fileCh := make(chan walk.Entry, 1024)
+		errorCh := make(chan error, 32)
+		runCtx, cancel := context.WithCancel(ctx)
+		defer cancel()
+
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			walker.RunWithErrors(runCtx, roots, fileCh, errorCh)
+		}()
+		defer func() {
+			cancel()
+			<-done
+		}()
+
+		for fileCh != nil || errorCh != nil {
+			select {
+			case err, ok := <-errorCh:
+				if !ok {
+					errorCh = nil
+					continue
+				}
+				if !yield(findpkg.Result{}, err) {
+					return
+				}
+			case entry, ok := <-fileCh:
+				if !ok {
+					fileCh = nil
+					continue
+				}
+				matchPath := findMatchPath(entry.DisplayPath(), roots)
+				if !filter.MatchPath(entry, matchPath) {
+					continue
+				}
+				if !yield(findpkg.NewResult(entry), nil) {
+					return
+				}
+			}
+		}
+	}
+}
+
+// FindOption configures Find.
+type FindOption func(*findpkg.Config)
+
+// DefaultFindConfig returns a finder configuration with pattern matching
+// enabled and the shared walker's zero-value traversal defaults.
+func DefaultFindConfig(pattern string) findpkg.Config {
+	return findpkg.Config{
+		Matcher: findpkg.MatcherConfig{Pattern: pattern},
+		Walk:    walk.Config{Threads: 0},
+	}
+}
+
+// WithFindFS selects the filesystem used by Find.
+func WithFindFS(fsys fs.FS) FindOption {
+	return func(c *findpkg.Config) { c.FS = fsys }
+}
+
+// WithFindThreads sets the finder traversal worker count.
+func WithFindThreads(n int) FindOption {
+	return func(c *findpkg.Config) { c.Walk.Threads = n }
+}
+
+// WithFindGlob enables glob matching.
+func WithFindGlob(v bool) FindOption {
+	return func(c *findpkg.Config) { c.Matcher.Glob = v }
+}
+
+// WithFindFixedStrings enables literal substring matching.
+func WithFindFixedStrings(v bool) FindOption {
+	return func(c *findpkg.Config) { c.Matcher.FixedStrings = v }
+}
+
+// WithFindIgnoreCase enables case-insensitive matching and extension filters.
+func WithFindIgnoreCase(v bool) FindOption {
+	return func(c *findpkg.Config) { c.Matcher.IgnoreCase = v }
+}
+
+// WithFindFullPath matches normalized paths relative to each search root.
+func WithFindFullPath(v bool) FindOption {
+	return func(c *findpkg.Config) { c.Matcher.FullPath = v }
+}
+
+// WithFindType adds a result type filter. Repeated values are ORed.
+func WithFindType(typ findpkg.Type) FindOption {
+	return func(c *findpkg.Config) { c.Types = append(c.Types, typ) }
+}
+
+// WithFindTypes adds result type filters. Repeated values are ORed.
+func WithFindTypes(types ...findpkg.Type) FindOption {
+	return func(c *findpkg.Config) { c.Types = append(c.Types, types...) }
+}
+
+// WithFindExtension adds an extension filter. Repeated values are ORed.
+func WithFindExtension(extension string) FindOption {
+	return func(c *findpkg.Config) { c.Extensions = append(c.Extensions, extension) }
+}
+
+// WithFindExtensions adds extension filters. Repeated values are ORed.
+func WithFindExtensions(extensions ...string) FindOption {
+	return func(c *findpkg.Config) { c.Extensions = append(c.Extensions, extensions...) }
+}
+
+// WithFindMinSize sets the inclusive minimum metadata size.
+func WithFindMinSize(size int64) FindOption {
+	return func(c *findpkg.Config) { c.MinSize = size }
+}
+
+// WithFindMaxSize sets the inclusive maximum metadata size.
+func WithFindMaxSize(size int64) FindOption {
+	return func(c *findpkg.Config) {
+		c.MaxSize = size
+		c.MaxSizeSet = true
+	}
+}
+
+// WithFindMinDepth sets the inclusive minimum root-relative depth.
+func WithFindMinDepth(depth int) FindOption {
+	return func(c *findpkg.Config) { c.Walk.MinDepth = depth }
+}
+
+// WithFindMaxDepth sets the inclusive maximum root-relative depth.
+func WithFindMaxDepth(depth int) FindOption {
+	return func(c *findpkg.Config) {
+		c.Walk.MaxDepth = depth
+		c.Walk.MaxDepthSet = true
+	}
+}
+
+// WithFindFollowSymlinks enables followed directory symlinks.
+func WithFindFollowSymlinks(v bool) FindOption {
+	return func(c *findpkg.Config) { c.Walk.FollowSymlinks = v }
+}
+
+// WithFindHidden includes hidden paths.
+func WithFindHidden(v bool) FindOption {
+	return func(c *findpkg.Config) { c.Ignore.Hidden = v }
+}
+
+// WithFindNoIgnore disables ignore-file loading.
+func WithFindNoIgnore(v bool) FindOption {
+	return func(c *findpkg.Config) { c.Ignore.NoIgnore = v }
+}
+
+func findMatchPath(entryPath string, roots []string) string {
+	entryPath = findpkg.NormalizePath(entryPath)
+	for _, root := range roots {
+		root = findpkg.NormalizePath(root)
+		if root == "" {
+			root = "."
+		}
+		rel, err := filepath.Rel(filepath.FromSlash(root), filepath.FromSlash(entryPath))
+		rel = filepath.ToSlash(rel)
+		if err != nil || rel == ".." || len(rel) > 3 && rel[:3] == "../" {
+			continue
+		}
+		if rel == "." {
+			return path.Base(root)
+		}
+		return rel
+	}
+	return entryPath
 }
 
 // Config represents the complete search configuration.
@@ -247,4 +453,3 @@ func WithGlobExcludes(globs ...string) Option {
 		c.Ignore.GlobExcludes = append(c.Ignore.GlobExcludes, globs...)
 	}
 }
-

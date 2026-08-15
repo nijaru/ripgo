@@ -5,6 +5,10 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"testing/fstest"
+
+	findpkg "github.com/nijaru/ripgo/find"
+	"github.com/nijaru/ripgo/walk"
 )
 
 func TestSearchTypeFilter(t *testing.T) {
@@ -160,6 +164,123 @@ func TestSearchGlobIncludesSubdir(t *testing.T) {
 	}
 }
 
+func TestFindMapFS(t *testing.T) {
+	fsys := fstest.MapFS{
+		"src/main.go":   &fstest.MapFile{Data: []byte("package main")},
+		"src/readme.md": &fstest.MapFile{Data: []byte("docs")},
+		"root.go":       &fstest.MapFile{Data: []byte("package root")},
+	}
+
+	var paths []string
+	for result, err := range Find(t.Context(), "src/*.go", nil,
+		WithFindFS(fsys),
+		WithFindGlob(true),
+		WithFindFullPath(true),
+	) {
+		if err != nil {
+			t.Fatal(err)
+		}
+		paths = append(paths, result.Path)
+		if result.Kind != walk.EntryFile || result.Info == nil || result.Depth != 2 {
+			t.Fatalf("result = %+v, want file metadata at depth 2", result)
+		}
+	}
+	if len(paths) != 1 || paths[0] != "src/main.go" {
+		t.Fatalf("found paths = %v, want [src/main.go]", paths)
+	}
+}
+
+func TestFindDirectoriesAndExplicitFile(t *testing.T) {
+	fsys := fstest.MapFS{
+		"src/main.go": &fstest.MapFile{Data: []byte("package main")},
+	}
+
+	var dirs []findpkg.Result
+	for result, err := range Find(t.Context(), "src", []string{"."},
+		WithFindFS(fsys),
+		WithFindType(findpkg.TypeDirectory),
+	) {
+		if err != nil {
+			t.Fatal(err)
+		}
+		dirs = append(dirs, result)
+	}
+	if len(dirs) != 1 || dirs[0].Path != "src" || dirs[0].Kind != walk.EntryDirectory {
+		t.Fatalf("directory results = %+v, want src directory", dirs)
+	}
+
+	var files []findpkg.Result
+	for result, err := range Find(t.Context(), "main.go", []string{"src/main.go"},
+		WithFindFS(fsys),
+		WithFindType(findpkg.TypeFile),
+	) {
+		if err != nil {
+			t.Fatal(err)
+		}
+		files = append(files, result)
+	}
+	if len(files) != 1 || files[0].Path != "src/main.go" || files[0].Depth != 0 {
+		t.Fatalf("explicit file results = %+v, want depth-zero file", files)
+	}
+}
+
+func TestFindReportsErrorsAndSupportsCancellation(t *testing.T) {
+	missing := filepath.Join(t.TempDir(), "missing")
+	var foundError bool
+	for _, err := range Find(t.Context(), "", []string{missing}) {
+		if err != nil {
+			foundError = true
+		}
+	}
+	if !foundError {
+		t.Fatal("Find did not report a missing-root error")
+	}
+
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	for result, err := range Find(ctx, "", []string{"."}) {
+		if err != nil {
+			t.Fatal(err)
+		}
+		if result.Path != "" {
+			t.Fatalf("canceled Find emitted %q", result.Path)
+		}
+	}
+}
+
+func TestFindEarlyBreak(t *testing.T) {
+	fsys := fstest.MapFS{
+		"a.txt": &fstest.MapFile{Data: []byte("a")},
+		"b.txt": &fstest.MapFile{Data: []byte("b")},
+	}
+	count := 0
+	for result, err := range Find(t.Context(), "", nil, WithFindFS(fsys)) {
+		if err != nil {
+			t.Fatal(err)
+		}
+		if result.Path != "" {
+			count++
+		}
+		break
+	}
+	if count != 1 {
+		t.Fatalf("early-break result count = %d, want one", count)
+	}
+}
+
+func TestFindResultMetadataUsesFileInfo(t *testing.T) {
+	fsys := fstest.MapFS{"file.txt": &fstest.MapFile{Data: []byte("content")}}
+	for result, err := range Find(t.Context(), "file", nil, WithFindFS(fsys)) {
+		if err != nil {
+			t.Fatal(err)
+		}
+		if result.Info == nil || result.Info.IsDir() || result.Symlink {
+			t.Fatalf("result metadata = %+v, want regular file", result)
+		}
+		return
+	}
+	t.Fatal("Find returned no file result")
+}
 
 func writeFile(t *testing.T, path string, content string) {
 	t.Helper()

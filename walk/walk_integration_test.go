@@ -574,6 +574,25 @@ func TestWalkerContextCancel(t *testing.T) {
 	}
 }
 
+func TestWalkerReportsTraversalErrors(t *testing.T) {
+	missing := filepath.Join(t.TempDir(), "missing")
+	engine := newTestEngine(t, ignore.Config{NoIgnore: true, Hidden: true})
+	w := NewWalker(nil, Config{Threads: 1}, engine)
+	fileCh := make(chan Entry, 4)
+	errorCh := make(chan error, 4)
+	go w.RunWithErrors(t.Context(), []string{missing}, fileCh, errorCh)
+
+	for range fileCh {
+	}
+	var errors []error
+	for err := range errorCh {
+		errors = append(errors, err)
+	}
+	if len(errors) != 1 {
+		t.Fatalf("got %d traversal errors, want one: %v", len(errors), errors)
+	}
+}
+
 // --- Multiple roots ---
 
 func TestWalkerMultipleRoots(t *testing.T) {

@@ -3,6 +3,7 @@ package walk
 
 import (
 	"context"
+	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -320,9 +321,30 @@ func (w *Walker) isSymlink(path string) bool {
 }
 
 // Run walks paths and sends entries to fileCh.
-// fileCh is closed when all work is done.
+// fileCh is closed when all work is done. Traversal errors are skipped to
+// preserve the original walker contract; use RunWithErrors to receive them.
 func (w *Walker) Run(ctx context.Context, paths []string, fileCh chan<- Entry) {
+	w.RunWithErrors(ctx, paths, fileCh, nil)
+}
+
+// RunWithErrors walks paths, sending entries to fileCh and operational errors
+// to errorCh. Both channels are closed when traversal completes. A nil errorCh
+// preserves Run's skip-error behavior.
+func (w *Walker) RunWithErrors(ctx context.Context, paths []string, fileCh chan<- Entry, errorCh chan<- error) {
 	defer close(fileCh)
+	if errorCh != nil {
+		defer close(errorCh)
+	}
+
+	reportError := func(err error) {
+		if errorCh == nil {
+			return
+		}
+		select {
+		case <-ctx.Done():
+		case errorCh <- err:
+		}
+	}
 
 	queue := newDirQueue(len(paths) * 2)
 	stopAfter := context.AfterFunc(ctx, func() {
@@ -385,14 +407,14 @@ func (w *Walker) Run(ctx context.Context, paths []string, fileCh chan<- Entry) {
 	for range w.workers {
 		go func() {
 			defer wg.Done()
-			w.walkWorker(ctx, queue, fileCh)
+			w.walkWorker(ctx, queue, fileCh, reportError)
 		}()
 	}
 
 	wg.Wait()
 }
 
-func (w *Walker) walkWorker(ctx context.Context, queue *dirQueue, fileCh chan<- Entry) {
+func (w *Walker) walkWorker(ctx context.Context, queue *dirQueue, fileCh chan<- Entry, reportError func(error)) {
 	var subDirs []dirWork
 
 	for {
@@ -404,6 +426,7 @@ func (w *Walker) walkWorker(ctx context.Context, queue *dirQueue, fileCh chan<- 
 
 		entries, err := fs.ReadDir(w.fsys, dir)
 		if err != nil {
+			reportError(fmt.Errorf("read directory %q: %w", dir, err))
 			queue.Done()
 			continue
 		}
@@ -438,6 +461,7 @@ func (w *Walker) walkWorker(ctx context.Context, queue *dirQueue, fileCh chan<- 
 				}
 				info, err = fs.Stat(w.fsys, path)
 				if err != nil {
+					reportError(fmt.Errorf("stat %q: %w", path, err))
 					continue
 				}
 				isDir = info.IsDir()
@@ -478,8 +502,11 @@ func (w *Walker) walkWorker(ctx context.Context, queue *dirQueue, fileCh chan<- 
 
 			if info == nil {
 				info, err = entry.Info()
-				if err != nil && w.cfg.MaxFileSize > 0 {
-					continue
+				if err != nil {
+					reportError(fmt.Errorf("stat %q: %w", path, err))
+					if w.cfg.MaxFileSize > 0 {
+						continue
+					}
 				}
 			}
 

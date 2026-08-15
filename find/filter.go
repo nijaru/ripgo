@@ -51,6 +51,9 @@ type Config struct {
 	Walk walk.Config
 	// Ignore controls hidden and ignore-file behavior during traversal.
 	Ignore ignore.Config
+	// FS selects the filesystem used by the high-level finder API. Nil uses the
+	// local operating-system filesystem.
+	FS fs.FS
 }
 
 // Filter applies finder matching and metadata predicates to walk entries.
@@ -130,15 +133,24 @@ func NewFilter(cfg Config) (*Filter, error) {
 	}, nil
 }
 
-// Match reports whether entry satisfies every configured finder predicate.
+// Match reports whether entry satisfies every configured finder predicate,
+// matching the entry's display path.
 func (f *Filter) Match(entry walk.Entry) bool {
+	return f.MatchPath(entry, entry.DisplayPath())
+}
+
+// MatchPath reports whether entry satisfies every configured finder predicate,
+// matching matchPath instead of the entry's display path. Find uses this to
+// match full paths relative to each supplied root while preserving result
+// output paths.
+func (f *Filter) MatchPath(entry walk.Entry, matchPath string) bool {
 	if f == nil || f.matcher == nil {
 		return false
 	}
 	if !f.matchType(entry) || !f.matchSize(entry) || !f.matchExtension(entry) {
 		return false
 	}
-	return f.matcher.Match(entry.DisplayPath())
+	return f.matcher.Match(matchPath)
 }
 
 func (f *Filter) matchType(entry walk.Entry) bool {
