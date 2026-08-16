@@ -13,6 +13,7 @@ import (
 	"path"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"sync"
 
 	findpkg "github.com/nijaru/ripgo/find"
@@ -343,6 +344,17 @@ func findMatchPath(entryPath string, roots []string) string {
 		if root == "" {
 			root = "."
 		}
+		if root == "." {
+			return entryPath
+		}
+		if entryPath == root {
+			return path.Base(root)
+		}
+		prefix := strings.TrimSuffix(root, "/") + "/"
+		if strings.HasPrefix(entryPath, prefix) {
+			return strings.TrimPrefix(entryPath, prefix)
+		}
+
 		rel, err := filepath.Rel(filepath.FromSlash(root), filepath.FromSlash(entryPath))
 		rel = filepath.ToSlash(rel)
 		if err != nil || rel == ".." || len(rel) > 3 && rel[:3] == "../" {
