@@ -7,8 +7,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/nijaru/ripgo/fsref"
 	"github.com/nijaru/ripgo/internal/aho"
-	"github.com/nijaru/ripgo/internal/fsref"
 	"github.com/nijaru/ripgo/internal/osfs"
 	"github.com/nijaru/ripgo/internal/sys"
 	"github.com/nijaru/ripgo/pattern"
@@ -257,7 +257,7 @@ func (s *Searcher) SearchReader(r io.Reader, path string) (Result, error) {
 	return s.searchData(data, Result{Path: path}, false)
 }
 
-// Search reads a file via the provided Ref and returns all matches.
+// Search reads a file via the provided fsref.Ref and returns all matches.
 // When context lines are requested, a ring buffer retains only the last
 // <before> lines, avoiding O(N) memory for large files with few matches.
 func (s *Searcher) Search(ref fsref.Ref) (Result, error) {

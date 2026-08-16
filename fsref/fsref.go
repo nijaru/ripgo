@@ -1,3 +1,6 @@
+// Package fsref defines capability-backed file references used by search and
+// traversal. Implementations can provide lazy reads and memory mapping without
+// exposing filesystem-specific ownership to callers.
 package fsref
 
 import (

@@ -12,8 +12,8 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/nijaru/ripgo/fsref"
 	"github.com/nijaru/ripgo/ignore"
-	"github.com/nijaru/ripgo/internal/fsref"
 	"github.com/nijaru/ripgo/internal/osfs"
 )
 

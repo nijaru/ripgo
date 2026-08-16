@@ -90,6 +90,7 @@ p.PrintResult(result)
 | [`pattern`](pattern/) | Literal fast-path, regex RE2, and PCRE2 matching | `Matcher`, `Config`, `New()` |
 | [`search`](search/) | File scanning, mmap, line context, replace (`-r`), only-matching (`-o`) | `Searcher`, `Result`, `Match`, `Entry` |
 | [`walk`](walk/) | Depth-first concurrent traversal, lazy stats, binary detection | `Walker`, `Entry` |
+| [`fsref`](fsref/) | Capability-backed file access with mmap/read fallback | `Ref`, `Root` |
 | [`ignore`](ignore/) | Gitignore rules, parent cascading, negation, globstar, type filters | `Engine`, `IgnoreRule`, `IgnoreSet` |
 | [`printer`](printer/) | Text (colors/headings/truncation), JSON, count, and file printers | `Printer`, `TextPrinter`, `JSONPrinter` |
 | [`stats`](stats/) | Atomic match and file counters | `Stats` |

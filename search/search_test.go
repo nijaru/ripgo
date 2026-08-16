@@ -2,13 +2,13 @@ package search
 
 import (
 	"bytes"
+	"errors"
 	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
-	"github.com/nijaru/ripgo/internal/fsref"
 	"github.com/nijaru/ripgo/pattern"
 )
 
@@ -717,11 +717,13 @@ func BenchmarkSearch(b *testing.B) {
 }
 
 type memRef struct {
-	fsref.Ref
 	data []byte
 	path string
 }
 
+func (m *memRef) Open() (*os.File, error) {
+	return nil, errors.New("memRef does not expose an os.File")
+}
 func (m *memRef) ReadFile() ([]byte, error) { return m.data, nil }
 func (m *memRef) Mmap() ([]byte, func() error, error) {
 	return m.data, func() error { return nil }, nil

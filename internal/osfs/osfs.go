@@ -10,7 +10,7 @@ import (
 	"runtime"
 	"strings"
 
-	"github.com/nijaru/ripgo/internal/fsref"
+	"github.com/nijaru/ripgo/fsref"
 )
 
 // OSFS implements fs.FS, fs.StatFS, and fs.ReadDirFS for the local OS.
