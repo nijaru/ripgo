@@ -110,7 +110,7 @@ ripgo find --glob '*.go' --type f .
 ripgo find --type d --max-depth 2 .
 ```
 
-`ripgo find` is a read-only fd-like subset. It supports regex, glob, fixed-string, type, extension, size, depth, ignore, symlink, and path-output filters. It does not yet implement fd actions such as `--exec` or `--delete`; see `ripgo find --help` for the current surface.
+`ripgo find` supports regex, glob, fixed-string, type, extension, size, depth, ignore, symlink, and path-output filters. Finder actions are explicit and shell-free: `--exec 'command {}'` runs once per match, while `--exec-batch 'command {}'` expands a bounded batch. `--delete` requires `--type f` or `--type l`, removes only matched directory entries (never follows a symlink), and supports `--dry-run`. Actions stop on the first failure; earlier effects are not rolled back. Actions require `{}` and do not support `--sort` or `--print0` (except delete previews). See `ripgo find --help` for the current surface.
 
 ## Finder benchmark
 

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"slices"
 	"strings"
 
@@ -12,6 +13,7 @@ import (
 	"github.com/nijaru/ripgo"
 	findpkg "github.com/nijaru/ripgo/find"
 	"github.com/nijaru/ripgo/ignore"
+	"github.com/nijaru/ripgo/internal/action"
 	"github.com/nijaru/ripgo/internal/cli"
 	"github.com/nijaru/ripgo/internal/config"
 	"github.com/nijaru/ripgo/printer"
@@ -156,6 +158,12 @@ func runFind(ctx context.Context, opts cli.FindOptions) int {
 		return 2
 	}
 
+	mode, command, err := prepareFindAction(opts, cfg)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		return 2
+	}
+
 	findOpts := []ripgo.FindOption{
 		ripgo.WithFindGlob(cfg.Find.Matcher.Glob),
 		ripgo.WithFindFixedStrings(cfg.Find.Matcher.FixedStrings),
@@ -175,6 +183,10 @@ func runFind(ctx context.Context, opts cli.FindOptions) int {
 	}
 	if cfg.Find.Walk.MaxDepthSet {
 		findOpts = append(findOpts, ripgo.WithFindMaxDepth(cfg.Find.Walk.MaxDepth))
+	}
+
+	if mode != findActionNone {
+		return runFindAction(ctx, cfg, findOpts, mode, command, opts.ExecBatchSize)
 	}
 
 	pathPrinter := printer.NewPathPrinter(printer.PathConfig{
@@ -216,6 +228,169 @@ func runFind(ctx context.Context, opts cli.FindOptions) int {
 	}
 	if err := pathPrinter.Finish(); err != nil {
 		fmt.Fprintf(os.Stderr, "Error finishing path printer: %v\n", err)
+		return 2
+	}
+	if hadError {
+		return 2
+	}
+	if !found {
+		return 1
+	}
+	return 0
+}
+
+type findActionMode uint8
+
+const (
+	findActionNone findActionMode = iota
+	findActionExec
+	findActionExecBatch
+	findActionDelete
+	findActionDeleteDryRun
+)
+
+func prepareFindAction(opts cli.FindOptions, cfg *config.FindConfig) (findActionMode, *action.Template, error) {
+	if opts.Exec != "" && opts.ExecBatch != "" {
+		return findActionNone, nil, fmt.Errorf("--exec and --exec-batch are mutually exclusive")
+	}
+	if opts.Delete && (opts.Exec != "" || opts.ExecBatch != "") {
+		return findActionNone, nil, fmt.Errorf("--delete cannot be combined with --exec or --exec-batch")
+	}
+	if opts.DryRun && !opts.Delete {
+		return findActionNone, nil, fmt.Errorf("--dry-run requires --delete")
+	}
+	if opts.Delete && opts.Print0 && !opts.DryRun {
+		return findActionNone, nil, fmt.Errorf("--print0 is only valid with --delete when --dry-run is set")
+	}
+
+	mode := findActionNone
+	var command *action.Template
+	if opts.Exec != "" {
+		if cfg.Sort != "" && cfg.Sort != "none" {
+			return findActionNone, nil, fmt.Errorf("--sort cannot be combined with --exec")
+		}
+		if opts.Print0 {
+			return findActionNone, nil, fmt.Errorf("--print0 cannot be combined with --exec")
+		}
+		parsed, err := action.Parse(opts.Exec, false)
+		if err != nil {
+			return findActionNone, nil, err
+		}
+		mode, command = findActionExec, &parsed
+	}
+	if opts.ExecBatch != "" {
+		if cfg.Sort != "" && cfg.Sort != "none" {
+			return findActionNone, nil, fmt.Errorf("--sort cannot be combined with --exec-batch")
+		}
+		if opts.Print0 {
+			return findActionNone, nil, fmt.Errorf("--print0 cannot be combined with --exec-batch")
+		}
+		if opts.ExecBatchSize <= 0 || opts.ExecBatchSize > 10_000 {
+			return findActionNone, nil, fmt.Errorf("--exec-batch-size must be between 1 and 10000")
+		}
+		parsed, err := action.Parse(opts.ExecBatch, true)
+		if err != nil {
+			return findActionNone, nil, err
+		}
+		mode, command = findActionExecBatch, &parsed
+	}
+	if opts.Delete {
+		if cfg.Sort != "" && cfg.Sort != "none" {
+			return findActionNone, nil, fmt.Errorf("--sort cannot be combined with --delete")
+		}
+		if err := action.ValidateDeleteTypes(cfg.Find.Types); err != nil {
+			return findActionNone, nil, err
+		}
+		if opts.DryRun {
+			mode = findActionDeleteDryRun
+		} else {
+			mode = findActionDelete
+		}
+	}
+	return mode, command, nil
+}
+
+func runFindAction(ctx context.Context, cfg *config.FindConfig, findOpts []ripgo.FindOption, mode findActionMode, command *action.Template, batchSize int) int {
+	var pathPrinter *printer.PathPrinter
+	if mode == findActionDeleteDryRun {
+		pathPrinter = printer.NewPathPrinter(printer.PathConfig{
+			Writer:   os.Stdout,
+			Absolute: cfg.Absolute,
+			Null:     cfg.Print0,
+			Color:    cfg.Color,
+		})
+	}
+
+	found := false
+	hadError := false
+	batch := make([]string, 0, batchSize)
+	flushBatch := func() error {
+		if len(batch) == 0 {
+			return nil
+		}
+		err := command.RunBatch(ctx, batch, os.Stdout, os.Stderr)
+		batch = batch[:0]
+		return err
+	}
+
+	for result, err := range ripgo.Find(ctx, cfg.Pattern, cfg.Paths, findOpts...) {
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error finding paths: %v\n", err)
+			hadError = true
+			continue
+		}
+		found = true
+
+		actionResult := result
+		if cfg.Absolute {
+			absolute, err := filepath.Abs(result.Path)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error resolving path %q: %v\n", result.Path, err)
+				return 2
+			}
+			actionResult.Path = absolute
+		}
+
+		switch mode {
+		case findActionExec:
+			if err := command.Run(ctx, actionResult.Path, os.Stdout, os.Stderr); err != nil {
+				fmt.Fprintf(os.Stderr, "Error executing action for %q: %v\n", actionResult.Path, err)
+				return 2
+			}
+		case findActionExecBatch:
+			batch = append(batch, actionResult.Path)
+			if len(batch) == batchSize {
+				if err := flushBatch(); err != nil {
+					fmt.Fprintf(os.Stderr, "Error executing batch action: %v\n", err)
+					return 2
+				}
+			}
+		case findActionDelete:
+			if err := action.Delete(ctx, actionResult); err != nil {
+				fmt.Fprintf(os.Stderr, "Error deleting %q: %v\n", actionResult.Path, err)
+				return 2
+			}
+		case findActionDeleteDryRun:
+			if err := pathPrinter.PrintResult(actionResult); err != nil {
+				fmt.Fprintf(os.Stderr, "Error writing paths: %v\n", err)
+				return 2
+			}
+		}
+	}
+
+	if mode == findActionExecBatch {
+		if err := flushBatch(); err != nil {
+			fmt.Fprintf(os.Stderr, "Error executing batch action: %v\n", err)
+			return 2
+		}
+	}
+	if pathPrinter != nil {
+		if err := pathPrinter.Finish(); err != nil {
+			fmt.Fprintf(os.Stderr, "Error finishing path printer: %v\n", err)
+			return 2
+		}
+	}
+	if ctx.Err() != nil {
 		return 2
 	}
 	if hadError {

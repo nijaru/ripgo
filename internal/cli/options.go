@@ -72,6 +72,11 @@ type FindOptions struct {
 	Color          string   `name:"color" default:"auto" enum:"always,never,auto" help:"Control color output"`
 	Sort           string   `name:"sort" default:"none" enum:"none,path" help:"Sort output paths"`
 	Threads        int      `short:"j" help:"Number of worker threads (default: auto)"`
+	Exec           string   `name:"exec" help:"Run a shell-free command for each match (use {})"`
+	ExecBatch      string   `name:"exec-batch" help:"Run a shell-free command per bounded batch (use standalone {})"`
+	ExecBatchSize  int      `name:"exec-batch-size" default:"100" help:"Maximum paths per --exec-batch invocation"`
+	Delete         bool     `name:"delete" help:"Delete matched files or symlinks (requires --type f or --type l)"`
+	DryRun         bool     `name:"dry-run" help:"Preview --delete without changing files"`
 	Version        bool     `short:"v" help:"Show version"`
 }
 
