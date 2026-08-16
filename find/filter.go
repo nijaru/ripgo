@@ -69,15 +69,27 @@ type Filter struct {
 }
 
 // WalkerConfig returns the traversal settings required by finder mode.
-// Finder results include directories when requested by type filters, so
-// directory emission is always enabled for the shared walker.
+// Entries that cannot satisfy the configured type or extension filters are not
+// emitted, while matching directory and symlink entries remain available.
 func (c Config) WalkerConfig() walk.Config {
 	cfg := c.Walk
-	cfg.EmitDirs = true
-	cfg.EmitSymlinks = true
+	cfg.EmitDirs = c.emitsType(TypeDirectory)
+	cfg.EmitSymlinks = c.emitsType(TypeSymlink)
 	cfg.LazyFileInfo = c.lazyFileInfo()
 	cfg.IgnoreDanglingSymlinks = true
 	return cfg
+}
+
+func (c Config) emitsType(typ Type) bool {
+	if len(c.Types) == 0 {
+		return len(c.Extensions) == 0 || typ == TypeFile
+	}
+	for _, configured := range c.Types {
+		if configured == typ {
+			return true
+		}
+	}
+	return false
 }
 
 func (c Config) lazyFileInfo() bool {

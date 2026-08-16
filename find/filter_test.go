@@ -138,8 +138,21 @@ func TestConfigTraversalSettings(t *testing.T) {
 	}
 
 	config.Types = []Type{TypeDirectory}
-	if !config.WalkerConfig().LazyFileInfo {
-		t.Fatal("directory-only finder did not enable lazy file metadata")
+	walkConfig = config.WalkerConfig()
+	if !walkConfig.EmitDirs || walkConfig.EmitSymlinks || !walkConfig.LazyFileInfo {
+		t.Fatalf("directory-only WalkerConfig() = %+v, want directory-only emission", walkConfig)
+	}
+
+	config.Types = []Type{TypeFile}
+	walkConfig = config.WalkerConfig()
+	if walkConfig.EmitDirs || walkConfig.EmitSymlinks || walkConfig.LazyFileInfo {
+		t.Fatalf("file-only WalkerConfig() = %+v, want file-only eager metadata", walkConfig)
+	}
+
+	config = Config{Extensions: []string{"go"}}
+	walkConfig = config.WalkerConfig()
+	if walkConfig.EmitDirs || walkConfig.EmitSymlinks {
+		t.Fatalf("extension-only WalkerConfig() = %+v, want file-only emission", walkConfig)
 	}
 }
 
