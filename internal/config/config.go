@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 
+	findpkg "github.com/nijaru/ripgo/find"
 	"github.com/nijaru/ripgo/ignore"
 	"github.com/nijaru/ripgo/internal/cli"
 	"github.com/nijaru/ripgo/internal/osfs"
@@ -54,6 +55,17 @@ func (c *Config) OutputMode() OutputMode {
 	default:
 		return OutputNormal
 	}
+}
+
+// FindConfig contains validated runtime configuration for path finding.
+type FindConfig struct {
+	Paths    []string
+	Pattern  string
+	Find     findpkg.Config
+	Absolute bool
+	Print0   bool
+	Color    bool
+	Sort     string
 }
 
 type OutputMode int
@@ -173,6 +185,93 @@ func New(opts cli.Options) (*Config, error) {
 		Threads:          threads,
 		FS:               osfs.New(),
 	}, nil
+}
+
+// NewFind translates finder CLI options into public finder configuration.
+func NewFind(opts cli.FindOptions) (*FindConfig, error) {
+	paths := append([]string(nil), opts.Paths...)
+	if len(paths) == 0 {
+		paths = []string{"."}
+	}
+	if opts.MinDepth < 0 {
+		return nil, fmt.Errorf("minimum depth must not be negative: %d", opts.MinDepth)
+	}
+	if opts.MaxDepth != nil && *opts.MaxDepth < 0 {
+		return nil, fmt.Errorf("maximum depth must not be negative: %d", *opts.MaxDepth)
+	}
+
+	types, err := parseFindTypes(opts.Type)
+	if err != nil {
+		return nil, err
+	}
+
+	fcfg := findpkg.Config{
+		Matcher: findpkg.MatcherConfig{
+			Pattern:      opts.Pattern,
+			Glob:         opts.Glob,
+			FixedStrings: opts.FixedStrings,
+			IgnoreCase:   opts.IgnoreCase,
+			FullPath:     opts.FullPath,
+		},
+		Types:      types,
+		Extensions: append([]string(nil), opts.Extension...),
+		Walk: walk.Config{
+			Threads:        opts.Threads,
+			FollowSymlinks: opts.FollowSymlinks,
+			MinDepth:       opts.MinDepth,
+		},
+		Ignore: ignore.Config{
+			NoIgnore: opts.NoIgnore,
+			Hidden:   opts.Hidden,
+		},
+	}
+	if opts.MaxDepth != nil {
+		fcfg.Walk.MaxDepth = *opts.MaxDepth
+		fcfg.Walk.MaxDepthSet = true
+	}
+
+	if opts.MinSize != "" {
+		fcfg.MinSize, err = parseSize(opts.MinSize)
+		if err != nil {
+			return nil, fmt.Errorf("invalid minimum size: %w", err)
+		}
+	}
+	if opts.MaxSize != "" {
+		fcfg.MaxSize, err = parseSize(opts.MaxSize)
+		if err != nil {
+			return nil, fmt.Errorf("invalid maximum size: %w", err)
+		}
+		fcfg.MaxSizeSet = true
+	}
+
+	isTTY := term.IsTerminal(int(os.Stdout.Fd()))
+	useColor := opts.Color == "always" || (opts.Color == "auto" && isTTY)
+	return &FindConfig{
+		Paths:    paths,
+		Pattern:  opts.Pattern,
+		Find:     fcfg,
+		Absolute: opts.Absolute,
+		Print0:   opts.Print0,
+		Color:    useColor,
+		Sort:     opts.Sort,
+	}, nil
+}
+
+func parseFindTypes(values []string) ([]findpkg.Type, error) {
+	types := make([]findpkg.Type, 0, len(values))
+	for _, value := range values {
+		switch strings.ToLower(strings.TrimSpace(value)) {
+		case "f", "file", "regular":
+			types = append(types, findpkg.TypeFile)
+		case "d", "dir", "directory":
+			types = append(types, findpkg.TypeDirectory)
+		case "l", "link", "symlink":
+			types = append(types, findpkg.TypeSymlink)
+		default:
+			return nil, fmt.Errorf("unknown finder type %q (use f, d, or l)", value)
+		}
+	}
+	return types, nil
 }
 
 func parseSize(s string) (int64, error) {

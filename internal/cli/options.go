@@ -1,5 +1,12 @@
 package cli
 
+// CLI is the explicit command tree shown by top-level help. The executable
+// handles the legacy content-search syntax separately before parsing this tree.
+type CLI struct {
+	Search Options     `cmd:"search" help:"Search file contents"`
+	Find   FindOptions `cmd:"find" help:"Find paths by name"`
+}
+
 type Options struct {
 	Pattern          string   `arg:"" name:"pattern" optional:"" help:"Pattern to search for"`
 	Paths            []string `arg:"" name:"paths" optional:"" help:"Paths to search (default: .)"`
@@ -41,6 +48,31 @@ type Options struct {
 	Sort      string `name:"sort" help:"Sort results (path, modified, accessed, created, none) (default: none)"`
 	Threads   int    `short:"j" help:"Number of worker threads (default: auto)"`
 	Version   bool   `short:"v" help:"Show version"`
+}
+
+// FindOptions contains flags for the explicit path-finding command.
+type FindOptions struct {
+	Pattern        string   `arg:"" name:"pattern" optional:"" help:"Pattern to match against paths"`
+	Paths          []string `arg:"" name:"paths" optional:"" help:"Paths to search (default: .)"`
+	Glob           bool     `short:"g" help:"Interpret pattern as a glob"`
+	FixedStrings   bool     `short:"F" help:"Interpret pattern as a fixed string"`
+	IgnoreCase     bool     `short:"i" help:"Case insensitive matching"`
+	FullPath       bool     `name:"full-path" help:"Match the full path instead of the basename"`
+	Type           []string `short:"t" help:"Find only files (f), directories (d), or symlinks (l)"`
+	Extension      []string `short:"e" name:"extension" help:"Filter by extension"`
+	Hidden         bool     `short:"a" help:"Include hidden paths"`
+	NoIgnore       bool     `name:"no-ignore" help:"Don't respect ignore files"`
+	FollowSymlinks bool     `short:"L" help:"Follow symbolic links"`
+	MinDepth       int      `name:"min-depth" help:"Minimum root-relative depth"`
+	MaxDepth       *int     `name:"max-depth" help:"Maximum root-relative depth"`
+	MinSize        string   `name:"min-size" help:"Minimum size (bytes, k, m, or g)"`
+	MaxSize        string   `name:"max-size" help:"Maximum size (bytes, k, m, or g)"`
+	Absolute       bool     `name:"absolute" help:"Print absolute paths"`
+	Print0         bool     `name:"print0" help:"Terminate paths with NUL"`
+	Color          string   `name:"color" default:"auto" enum:"always,never,auto" help:"Control color output"`
+	Sort           string   `name:"sort" default:"none" enum:"none,path" help:"Sort output paths"`
+	Threads        int      `short:"j" help:"Number of worker threads (default: auto)"`
+	Version        bool     `short:"v" help:"Show version"`
 }
 
 var Version = "0.1.0"

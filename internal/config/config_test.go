@@ -3,6 +3,7 @@ package config
 import (
 	"testing"
 
+	findpkg "github.com/nijaru/ripgo/find"
 	"github.com/nijaru/ripgo/internal/cli"
 	"github.com/nijaru/ripgo/pattern"
 )
@@ -86,6 +87,45 @@ func TestParseSize(t *testing.T) {
 		if got != tt.want {
 			t.Errorf("parseSize(%q) = %d, want %d", tt.input, got, tt.want)
 		}
+	}
+}
+
+func TestNewFind(t *testing.T) {
+	maxDepth := 2
+	cfg, err := NewFind(cli.FindOptions{
+		Pattern:   "*.go",
+		Paths:     []string{"src"},
+		Glob:      true,
+		FullPath:  true,
+		Type:      []string{"f", "d"},
+		Extension: []string{"go"},
+		MaxDepth:  &maxDepth,
+		MinSize:   "1K",
+		MaxSize:   "2K",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Pattern != "*.go" || len(cfg.Paths) != 1 || cfg.Paths[0] != "src" {
+		t.Fatalf("find config = %+v, want pattern and path", cfg)
+	}
+	if !cfg.Find.Matcher.Glob || !cfg.Find.Matcher.FullPath || len(cfg.Find.Types) != 2 || cfg.Find.Types[0] != findpkg.TypeFile || cfg.Find.Types[1] != findpkg.TypeDirectory {
+		t.Fatalf("finder matching config = %+v, want glob/full-path/two types", cfg.Find)
+	}
+	if cfg.Find.MaxSize != 2*1024 || !cfg.Find.MaxSizeSet || cfg.Find.MinSize != 1024 {
+		t.Fatalf("finder size config = %+v, want 1K..2K", cfg.Find)
+	}
+	if cfg.Find.Walk.MaxDepth != 2 || !cfg.Find.Walk.MaxDepthSet {
+		t.Fatalf("finder depth config = %+v, want explicit max depth 2", cfg.Find.Walk)
+	}
+}
+
+func TestNewFindErrors(t *testing.T) {
+	if _, err := NewFind(cli.FindOptions{Type: []string{"unknown"}}); err == nil {
+		t.Fatal("unknown finder type did not fail")
+	}
+	if _, err := NewFind(cli.FindOptions{MinDepth: -1}); err == nil {
+		t.Fatal("negative minimum depth did not fail")
 	}
 }
 

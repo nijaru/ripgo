@@ -10,6 +10,7 @@ import (
 
 	"github.com/alecthomas/kong"
 	"github.com/nijaru/ripgo"
+	findpkg "github.com/nijaru/ripgo/find"
 	"github.com/nijaru/ripgo/ignore"
 	"github.com/nijaru/ripgo/internal/cli"
 	"github.com/nijaru/ripgo/internal/config"
@@ -19,9 +20,51 @@ import (
 )
 
 func run(ctx context.Context) int {
-	var opts cli.Options
-	kong.Parse(&opts)
+	args := os.Args[1:]
+	if len(args) > 0 && args[0] == "find" {
+		var opts cli.FindOptions
+		parser, err := kong.New(&opts, kong.Name("ripgo find"))
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			return 2
+		}
+		if _, err := parser.Parse(args[1:]); err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			return 2
+		}
+		return runFind(ctx, opts)
+	}
+	if len(args) > 0 && (args[0] == "--help" || args[0] == "-h") {
+		var root cli.CLI
+		parser, err := kong.New(&root)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			return 2
+		}
+		if _, err := parser.Parse(args); err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			return 2
+		}
+		return 0
+	}
+	if len(args) > 0 && args[0] == "search" {
+		args = args[1:]
+	}
 
+	var opts cli.Options
+	parser, err := kong.New(&opts)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		return 1
+	}
+	if _, err := parser.Parse(args); err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		return 1
+	}
+	return runSearch(ctx, opts)
+}
+
+func runSearch(ctx context.Context, opts cli.Options) int {
 	cfg, err := config.New(opts)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
@@ -93,6 +136,84 @@ func run(ctx context.Context) int {
 		return 1
 	}
 
+	return 0
+}
+
+func runFind(ctx context.Context, opts cli.FindOptions) int {
+	cfg, err := config.NewFind(opts)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		return 2
+	}
+
+	findOpts := []ripgo.FindOption{
+		ripgo.WithFindGlob(cfg.Find.Matcher.Glob),
+		ripgo.WithFindFixedStrings(cfg.Find.Matcher.FixedStrings),
+		ripgo.WithFindIgnoreCase(cfg.Find.Matcher.IgnoreCase),
+		ripgo.WithFindFullPath(cfg.Find.Matcher.FullPath),
+		ripgo.WithFindTypes(cfg.Find.Types...),
+		ripgo.WithFindExtensions(cfg.Find.Extensions...),
+		ripgo.WithFindMinSize(cfg.Find.MinSize),
+		ripgo.WithFindMinDepth(cfg.Find.Walk.MinDepth),
+		ripgo.WithFindFollowSymlinks(cfg.Find.Walk.FollowSymlinks),
+		ripgo.WithFindHidden(cfg.Find.Ignore.Hidden),
+		ripgo.WithFindNoIgnore(cfg.Find.Ignore.NoIgnore),
+		ripgo.WithFindThreads(cfg.Find.Walk.Threads),
+	}
+	if cfg.Find.MaxSizeSet {
+		findOpts = append(findOpts, ripgo.WithFindMaxSize(cfg.Find.MaxSize))
+	}
+	if cfg.Find.Walk.MaxDepthSet {
+		findOpts = append(findOpts, ripgo.WithFindMaxDepth(cfg.Find.Walk.MaxDepth))
+	}
+
+	pathPrinter := printer.NewPathPrinter(printer.PathConfig{
+		Writer:   os.Stdout,
+		Absolute: cfg.Absolute,
+		Null:     cfg.Print0,
+		Color:    cfg.Color,
+	})
+	var results []findpkg.Result
+	found := false
+	hadError := false
+	for result, err := range ripgo.Find(ctx, cfg.Pattern, cfg.Paths, findOpts...) {
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error finding paths: %v\n", err)
+			hadError = true
+			continue
+		}
+		found = true
+		if cfg.Sort == "path" {
+			results = append(results, result)
+			continue
+		}
+		if err := pathPrinter.PrintResult(result); err != nil {
+			fmt.Fprintf(os.Stderr, "Error writing paths: %v\n", err)
+			return 2
+		}
+	}
+
+	if cfg.Sort == "path" {
+		slices.SortFunc(results, func(a, b findpkg.Result) int {
+			return strings.Compare(a.Path, b.Path)
+		})
+		for _, result := range results {
+			if err := pathPrinter.PrintResult(result); err != nil {
+				fmt.Fprintf(os.Stderr, "Error writing paths: %v\n", err)
+				return 2
+			}
+		}
+	}
+	if err := pathPrinter.Finish(); err != nil {
+		fmt.Fprintf(os.Stderr, "Error finishing path printer: %v\n", err)
+		return 2
+	}
+	if hadError {
+		return 2
+	}
+	if !found {
+		return 1
+	}
 	return 0
 }
 
