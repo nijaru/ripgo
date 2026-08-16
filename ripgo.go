@@ -212,7 +212,11 @@ func Find(ctx context.Context, pattern string, paths []string, opts ...FindOptio
 						continue
 					}
 				}
-				if !yield(findpkg.NewResult(entry), nil) {
+				result := findpkg.NewResult(entry)
+				if cfg.OmitInfo {
+					result.Info = nil
+				}
+				if !yield(result, nil) {
 					return
 				}
 			}

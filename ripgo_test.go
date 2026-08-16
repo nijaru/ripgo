@@ -246,6 +246,21 @@ func TestFindOmitMetadata(t *testing.T) {
 	if got := fsys.infoCalls.Load(); got != 0 {
 		t.Fatalf("file metadata calls = %d, want none", got)
 	}
+
+	fsys.MapFS["src/child.go"] = &fstest.MapFile{Data: []byte("package child")}
+	for result, err := range Find(t.Context(), "", nil,
+		WithFindFS(fsys),
+		WithFindType(findpkg.TypeDirectory),
+		WithFindMetadata(false),
+		WithFindNoIgnore(true),
+	) {
+		if err != nil {
+			t.Fatal(err)
+		}
+		if result.Info != nil {
+			t.Fatalf("directory result = %+v, want omitted metadata", result)
+		}
+	}
 }
 
 func TestFindDirectoriesAndExplicitFile(t *testing.T) {
