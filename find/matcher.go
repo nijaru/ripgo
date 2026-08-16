@@ -65,15 +65,25 @@ func NewMatcher(cfg MatcherConfig) (*Matcher, error) {
 			return strings.Contains(candidate, pattern)
 		}
 	case cfg.Glob:
-		compiled, err := glob.Compile(pattern, '/')
-		if err != nil {
-			return nil, fmt.Errorf("find: compile glob %q: %w", cfg.Pattern, err)
+		patterns := optionalGlobPatterns(pattern)
+		compiled := make([]glob.Glob, 0, len(patterns))
+		for _, candidatePattern := range patterns {
+			candidate, err := glob.Compile(candidatePattern, '/')
+			if err != nil {
+				return nil, fmt.Errorf("find: compile glob %q: %w", cfg.Pattern, err)
+			}
+			compiled = append(compiled, candidate)
 		}
 		match = func(candidate string) bool {
 			if cfg.IgnoreCase {
 				candidate = strings.ToLower(candidate)
 			}
-			return compiled.Match(candidate)
+			for _, matcher := range compiled {
+				if matcher.Match(candidate) {
+					return true
+				}
+			}
+			return false
 		}
 	default:
 		if cfg.IgnoreCase {
@@ -112,4 +122,23 @@ func NormalizePath(name string) string {
 	}
 	name = strings.ReplaceAll(name, "\\", "/")
 	return path.Clean(name)
+}
+
+// optionalGlobPatterns expands recursive path segments into a recursive form
+// and a zero-directory form. gobwas/glob treats **/ as requiring a directory,
+// while fd-style patterns treat it as optional at a segment boundary.
+func optionalGlobPatterns(pattern string) []string {
+	idx := strings.Index(pattern, "**/")
+	if idx < 0 {
+		return []string{pattern}
+	}
+
+	prefix := pattern[:idx]
+	rest := pattern[idx+3:]
+	tail := optionalGlobPatterns(rest)
+	patterns := make([]string, 0, len(tail)*2)
+	for _, variant := range tail {
+		patterns = append(patterns, prefix+variant, prefix+"**/"+variant)
+	}
+	return patterns
 }

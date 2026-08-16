@@ -57,6 +57,18 @@ func TestMatcherModes(t *testing.T) {
 			want:   true,
 		},
 		{
+			name:   "glob recursive segment may be empty",
+			config: MatcherConfig{Pattern: "src/**/*.go", Glob: true, FullPath: true},
+			path:   "src/main.go",
+			want:   true,
+		},
+		{
+			name:   "glob leading recursive segment may be empty",
+			config: MatcherConfig{Pattern: "**/*.go", Glob: true, FullPath: true},
+			path:   "main.go",
+			want:   true,
+		},
+		{
 			name:   "glob case insensitive",
 			config: MatcherConfig{Pattern: "*.GO", Glob: true, IgnoreCase: true},
 			path:   "main.go",
