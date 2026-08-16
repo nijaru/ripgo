@@ -687,14 +687,16 @@ func BenchmarkSearch(b *testing.B) {
 
 	b.Run("mem_literal", func(b *testing.B) {
 		for b.Loop() {
-			s.Search(ref)
+			res, _ := s.Search(ref)
+			res.Release()
 		}
 	})
 
 	b.Run("mem_with_context", func(b *testing.B) {
 		sCtx := NewSearcher(nil, Config{Before: 2, After: 2}, m)
 		for b.Loop() {
-			sCtx.Search(ref)
+			res, _ := sCtx.Search(ref)
+			res.Release()
 		}
 	})
 

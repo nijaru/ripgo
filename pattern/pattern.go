@@ -361,9 +361,15 @@ func isBoundary(line []byte, idx int) bool {
 	return isWord(line[idx-1]) != isWord(line[idx])
 }
 
-// Match searches for the pattern in a single line.
-func (m *LiteralMatcher) Match(line []byte) (locs []int, ok bool) {
-	start := 0
+// LocationMatcher is an optional interface implemented by matchers that can return
+// single match boundaries without slice allocation.
+type LocationMatcher interface {
+	MatchLocation(line []byte) (start, end int, ok bool)
+}
+
+// MatchLocation returns the byte boundaries of the match in a single line without slice allocation.
+func (m *LiteralMatcher) MatchLocation(line []byte) (start, end int, ok bool) {
+	start = 0
 	for {
 		var idx int
 		if m.caseFold {
@@ -373,7 +379,7 @@ func (m *LiteralMatcher) Match(line []byte) (locs []int, ok bool) {
 		}
 
 		if idx < 0 {
-			return nil, false
+			return 0, 0, false
 		}
 
 		pos := start + idx
@@ -382,14 +388,23 @@ func (m *LiteralMatcher) Match(line []byte) (locs []int, ok bool) {
 			if !isBoundary(line, pos) || !isBoundary(line, pos+len(m.pattern)) {
 				start += idx + 1
 				if start >= len(line) {
-					return nil, false
+					return 0, 0, false
 				}
 				continue
 			}
 		}
 
-		return []int{pos, pos + len(m.pattern)}, true
+		return pos, pos + len(m.pattern), true
 	}
+}
+
+// Match searches for the pattern in a single line.
+func (m *LiteralMatcher) Match(line []byte) (locs []int, ok bool) {
+	start, end, ok := m.MatchLocation(line)
+	if !ok {
+		return nil, false
+	}
+	return []int{start, end}, true
 }
 
 // MatchFile searches the entire file contents for the pattern.

@@ -90,28 +90,18 @@ func (r *IgnoreRule) Match(relPath string, isDir bool) bool {
 
 // matchPattern handles the core glob matching for a single pattern.
 func matchPattern(pattern string, anchored bool, relPath string, isDir bool) bool {
-	try := func(path string) bool {
-		ok := matchGlob(pattern, path)
-		if !ok && isDir {
-			ok = matchGlob(pattern, path+"/")
-		}
-		return ok
-	}
-
 	if anchored || strings.ContainsRune(pattern, '/') {
-		return try(relPath)
+		return matchGlob(pattern, relPath)
 	}
 
 	// Non-anchored, no slash: match against full path and basename
-	if try(relPath) {
+	if matchGlob(pattern, relPath) {
 		return true
 	}
 
 	// Try basename — patterns like *.txt, build match at any depth
 	if idx := strings.LastIndexByte(relPath, '/'); idx >= 0 {
-		if try(relPath[idx+1:]) {
-			return true
-		}
+		return matchGlob(pattern, relPath[idx+1:])
 	}
 
 	return false
@@ -121,16 +111,23 @@ func matchPattern(pattern string, anchored bool, relPath string, isDir bool) boo
 // Supports * (within segment), ** (recursive), ? (single char), and literals.
 // Uses forward-slash path separators.
 func matchGlob(pattern, path string) bool {
+	if !hasMeta(pattern) {
+		return pattern == path
+	}
+	if strings.HasPrefix(pattern, "*.") && !hasMeta(pattern[2:]) {
+		return strings.HasSuffix(path, pattern[1:])
+	}
 	if strings.Contains(pattern, "**") {
 		return matchGlobStar(pattern, path)
 	}
 
 	// Simple patterns: use filepath.Match (handles *, ?, [abc], literals)
 	ok, err := filepath.Match(pattern, path)
-	if err != nil {
-		return false
-	}
-	return ok
+	return err == nil && ok
+}
+
+func hasMeta(s string) bool {
+	return strings.ContainsAny(s, "*?[\\]")
 }
 
 // matchGlobStar handles patterns containing **.

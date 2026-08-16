@@ -101,7 +101,7 @@ type Config struct {
 // Release returns pooled resources to the searcher.
 func (r *Result) Release() {
 	for i := range r.Matches {
-		if len(r.Matches[i].Submatches) > 1 {
+		if len(r.Matches[i].Submatches) > 0 {
 			submatchPool.Put(r.Matches[i].Submatches[:0])
 			r.Matches[i].Submatches = nil
 		}
@@ -126,10 +126,11 @@ var expandPool = sync.Pool{
 
 // Searcher scans files for matches against a compiled pattern.
 type Searcher struct {
-	fsys      fs.FS
-	cfg       Config
-	matcher   pattern.Matcher
-	prefilter *aho.Machine
+	fsys            fs.FS
+	cfg             Config
+	matcher         pattern.Matcher
+	locationMatcher pattern.LocationMatcher
+	prefilter       *aho.Machine
 }
 
 // NewSearcher creates a searcher with the given config and matcher.
@@ -148,11 +149,17 @@ func NewSearcher(fsys fs.FS, cfg Config, matcher pattern.Matcher) *Searcher {
 		prefilter = aho.New(lits)
 	}
 
+	var locMatcher pattern.LocationMatcher
+	if lm, ok := matcher.(pattern.LocationMatcher); ok {
+		locMatcher = lm
+	}
+
 	return &Searcher{
-		fsys:      fsys,
-		cfg:       cfg,
-		matcher:   matcher,
-		prefilter: prefilter,
+		fsys:            fsys,
+		cfg:             cfg,
+		matcher:         matcher,
+		locationMatcher: locMatcher,
+		prefilter:       prefilter,
 	}
 }
 
@@ -320,7 +327,7 @@ func (s *Searcher) searchData(data []byte, result Result, mapped bool) (Result, 
 		}
 	}
 
-	result.Binary = bytes.Contains(data[:min(len(data), 8192)], []byte{0})
+	result.Binary = bytes.IndexByte(data[:min(len(data), 8192)], 0) >= 0
 	if !s.cfg.SearchBinary && !s.cfg.OnlyBinary && result.Binary {
 		return result, nil
 	}
@@ -392,7 +399,19 @@ func (s *Searcher) searchData(data []byte, result Result, mapped bool) (Result, 
 			break
 		}
 
-		locs, ok := s.matcher.Match(line)
+		var matchStart, matchEnd int
+		var locs []int
+		var ok bool
+
+		if s.locationMatcher != nil {
+			matchStart, matchEnd, ok = s.locationMatcher.MatchLocation(line)
+		} else {
+			locs, ok = s.matcher.Match(line)
+			if ok {
+				matchStart, matchEnd = locs[0], locs[1]
+			}
+		}
+
 		if !ok {
 			// No match — add to before ring buffer.
 			if needContext && beforeCap > 0 {
@@ -411,10 +430,12 @@ func (s *Searcher) searchData(data []byte, result Result, mapped bool) (Result, 
 		content := line
 
 		var submatches [][2]int
-		if len(locs) == 2 {
-			submatches = [][2]int{{locs[0], locs[1]}}
+		if len(locs) <= 2 {
+			submatches = submatchPool.Get().([][2]int)
+			submatches = append(submatches[:0], [2]int{matchStart, matchEnd})
 		} else {
 			submatches = submatchPool.Get().([][2]int)
+			submatches = submatches[:0]
 			for i := 0; i < len(locs); i += 2 {
 				if locs[i] >= 0 {
 					submatches = append(submatches, [2]int{locs[i], locs[i+1]})
@@ -426,16 +447,19 @@ func (s *Searcher) searchData(data []byte, result Result, mapped bool) (Result, 
 
 		match := Match{
 			Line:       lineNum,
-			Column:     locs[0] + 1,
+			Column:     matchStart + 1,
 			LineBytes:  content,
 			Submatches: submatches,
 		}
 
 		if s.cfg.Replace != "" {
+			if locs == nil {
+				locs = []int{matchStart, matchEnd}
+			}
 			buf := expandPool.Get().([]byte)
 			expanded := s.matcher.Expand(buf[:0], []byte(s.cfg.Replace), line, locs)
-			prefix := line[:locs[0]]
-			suffix := line[locs[1]:]
+			prefix := line[:matchStart]
+			suffix := line[matchEnd:]
 			replaced := make([]byte, 0, len(prefix)+len(expanded)+len(suffix))
 			replaced = append(append(append(replaced, prefix...), expanded...), suffix...)
 			match.ReplaceBytes = replaced
@@ -444,7 +468,7 @@ func (s *Searcher) searchData(data []byte, result Result, mapped bool) (Result, 
 
 		if s.cfg.OnlyMatching {
 			m := match
-			matchedText := content[locs[0]:locs[1]]
+			matchedText := content[matchStart:matchEnd]
 			if mapped {
 				matchedText = bytes.Clone(matchedText)
 			}
