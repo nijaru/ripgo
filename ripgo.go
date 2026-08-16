@@ -492,3 +492,11 @@ func WithGlobExcludes(globs ...string) Option {
 		c.Ignore.GlobExcludes = append(c.Ignore.GlobExcludes, globs...)
 	}
 }
+
+// WithEncoding sets the text encoding for content search (e.g. "auto", "utf-16le", "latin1", "none").
+func WithEncoding(enc string) Option {
+	return func(c *Config) {
+		c.Search.Encoding = enc
+	}
+}
+

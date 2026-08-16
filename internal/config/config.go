@@ -121,6 +121,12 @@ func New(opts cli.Options) (*Config, error) {
 		WordRegexp:   opts.WordRegexp,
 	}
 
+	if opts.Encoding != "" {
+		if _, err := search.LookupEncoding(opts.Encoding); err != nil {
+			return nil, err
+		}
+	}
+
 	scfg := search.Config{
 		MaxCount:     opts.MaxCount,
 		SearchBinary: (!opts.NoBinary && !opts.OnlyBinary) || opts.Unrestricted >= 3,
@@ -128,6 +134,7 @@ func New(opts cli.Options) (*Config, error) {
 		Multiline:    opts.Multiline,
 		OnlyMatching: opts.OnlyMatching,
 		Replace:      opts.Replace,
+		Encoding:     opts.Encoding,
 	}
 
 	if opts.Context > 0 {

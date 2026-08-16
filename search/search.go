@@ -93,6 +93,9 @@ type Config struct {
 	OnlyMatching bool
 	// Replace is the replacement template.
 	Replace string
+	// Encoding specifies the text encoding (e.g. "auto", "utf-16le", "latin1", "none").
+	// Empty string or "auto" enables automatic UTF-16/UTF-8 BOM sniffing.
+	Encoding string
 }
 
 // Release returns pooled resources to the searcher.
@@ -295,6 +298,16 @@ func (s *Searcher) Search(ref fsref.Ref) (Result, error) {
 }
 
 func (s *Searcher) searchData(data []byte, result Result, mapped bool) (Result, error) {
+	decoded, modified, err := DecodeData(data, s.cfg.Encoding)
+	if err != nil {
+		result.Error = err
+		return result, err
+	}
+	data = decoded
+	if modified {
+		mapped = false
+	}
+
 	// Pre-filter: skip files that can't possibly match.
 	// Use Aho-Corasick for multiple literals, bytes.Contains for single.
 	if s.prefilter != nil {

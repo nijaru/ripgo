@@ -40,6 +40,7 @@ type Options struct {
 	NoBinary         bool     `name:"no-binary" help:"Don't search binary files"`
 	OnlyBinary       bool     `name:"only-binary" help:"Search only binary files"`
 	Replace          string   `short:"r" help:"Replacement string"`
+	Encoding         string   `short:"E" name:"encoding" help:"Specify text encoding (default: auto; e.g. utf-16le, utf-16be, latin1)"`
 	Json             bool     `name:"json" help:"JSON output"`
 
 	Multiline bool   `short:"U" help:"Multiline search"`

@@ -177,6 +177,41 @@ func TestRunLegacySearch(t *testing.T) {
 	}
 }
 
+func TestRunEncoding(t *testing.T) {
+	root := t.TempDir()
+
+	// Write UTF-16LE with BOM
+	utf16LE := []byte{0xff, 0xfe, 'h', 0, 'e', 0, 'l', 0, 'l', 0, 'o', 0, ' ', 0, 'w', 0, 'o', 0, 'r', 0, 'l', 0, 'd', 0, '\n', 0}
+	if err := os.WriteFile(filepath.Join(root, "utf16.txt"), utf16LE, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Write Latin-1
+	latin1 := []byte{'c', 'a', 'f', 0xe9, ' ', 'l', 'a', 't', 't', 'e', '\n'}
+	if err := os.WriteFile(filepath.Join(root, "latin1.txt"), latin1, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Auto-BOM finds utf16.txt
+	status, output, stderr := captureRun(t, "hello", root)
+	if status != 0 || !strings.Contains(output, "hello world") || stderr != "" {
+		t.Fatalf("auto-BOM search status=%d output=%q stderr=%q", status, output, stderr)
+	}
+
+	// Explicit latin-1 flag
+	status, output, stderr = captureRun(t, "-E", "latin1", "café", root)
+	if status != 0 || !strings.Contains(output, "café latte") || stderr != "" {
+		t.Fatalf("explicit -E latin1 status=%d output=%q stderr=%q", status, output, stderr)
+	}
+
+	// Unknown encoding error
+	status, output, stderr = captureRun(t, "-E", "invalid-enc-123", "pattern", root)
+	if status != 2 || !strings.Contains(stderr, "unknown or unsupported encoding") {
+		t.Fatalf("invalid encoding status=%d output=%q stderr=%q, want status 2 with error", status, output, stderr)
+	}
+}
+
+
 func captureRun(t *testing.T, args ...string) (int, string, string) {
 	t.Helper()
 	oldArgs := os.Args

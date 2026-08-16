@@ -434,6 +434,54 @@ func TestFindResultMetadataUsesFileInfo(t *testing.T) {
 	t.Fatal("Find returned no file result")
 }
 
+func TestSearchEncoding(t *testing.T) {
+	root := t.TempDir()
+
+	// Write UTF-16LE with BOM
+	utf16LE := []byte{0xff, 0xfe, 'h', 0, 'e', 0, 'l', 0, 'l', 0, 'o', 0, '\n', 0}
+	if err := os.WriteFile(filepath.Join(root, "utf16.txt"), utf16LE, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Write Latin-1 file
+	latin1 := []byte{'c', 'a', 'f', 0xe9, '\n'}
+	if err := os.WriteFile(filepath.Join(root, "latin1.txt"), latin1, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Auto-BOM finds utf16.txt
+	var foundUTF16 bool
+	for res, err := range Search(t.Context(), "hello", []string{root}) {
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(res.Matches) > 0 && filepath.Base(res.Path) == "utf16.txt" {
+			foundUTF16 = true
+			if res.Matches[0].Line != 1 {
+				t.Errorf("expected match on line 1, got %d", res.Matches[0].Line)
+			}
+		}
+	}
+	if !foundUTF16 {
+		t.Errorf("failed to find match in auto-detected UTF-16LE file")
+	}
+
+	// Explicit latin-1 finds latin1.txt
+	var foundLatin1 bool
+	for res, err := range Search(t.Context(), "café", []string{root}, WithEncoding("latin1")) {
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(res.Matches) > 0 && filepath.Base(res.Path) == "latin1.txt" {
+			foundLatin1 = true
+		}
+	}
+	if !foundLatin1 {
+		t.Errorf("failed to find match in explicit latin1 file")
+	}
+}
+
+
 func writeFile(t *testing.T, path string, content string) {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {

@@ -62,11 +62,11 @@ func run(ctx context.Context) int {
 	parser, err := kong.New(&opts)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-		return 1
+		return 2
 	}
 	if _, err := parser.Parse(args); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-		return 1
+		return 2
 	}
 	if opts.Version {
 		fmt.Println(cli.Version)
@@ -79,7 +79,7 @@ func runSearch(ctx context.Context, opts cli.Options) int {
 	cfg, err := config.New(opts)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-		return 1
+		return 2
 	}
 
 	if cfg.TypeList {
@@ -108,6 +108,9 @@ func runSearch(ctx context.Context, opts cli.Options) int {
 		ripgo.WithWordRegexp(cfg.Pattern.WordRegexp),
 		ripgo.WithOnlyMatching(cfg.Search.OnlyMatching),
 		ripgo.WithReplace(cfg.Search.Replace),
+		ripgo.WithEncoding(cfg.Search.Encoding),
+		ripgo.WithGlobIncludes(cfg.Ignore.GlobIncludes...),
+		ripgo.WithGlobExcludes(cfg.Ignore.GlobExcludes...),
 	}
 	prn := newPrinter(cfg)
 	var st stats.Stats
