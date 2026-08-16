@@ -86,7 +86,6 @@ func TestFilterExtensionsAndSize(t *testing.T) {
 	}
 
 	caseInsensitive, err := NewFilter(Config{
-		Matcher:    MatcherConfig{IgnoreCase: true},
 		Extensions: []string{"GO"},
 	})
 	if err != nil {
@@ -134,7 +133,7 @@ func TestConfigTraversalSettings(t *testing.T) {
 		},
 	}
 	walkConfig := config.WalkerConfig()
-	if !walkConfig.EmitDirs || !walkConfig.FollowSymlinks || walkConfig.MinDepth != 2 || walkConfig.MaxDepth != 3 || !walkConfig.MaxDepthSet {
+	if !walkConfig.EmitDirs || !walkConfig.EmitSymlinks || !walkConfig.IgnoreDanglingSymlinks || !walkConfig.FollowSymlinks || walkConfig.MinDepth != 2 || walkConfig.MaxDepth != 3 || !walkConfig.MaxDepthSet {
 		t.Fatalf("WalkerConfig() = %+v, want finder traversal settings with directory emission", walkConfig)
 	}
 }

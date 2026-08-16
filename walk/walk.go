@@ -3,6 +3,7 @@ package walk
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io/fs"
 	"os"
@@ -20,6 +21,10 @@ type rootProvider interface {
 	OpenRoot(dir string) (*fsref.Root, error)
 }
 
+type lstatProvider interface {
+	Lstat(name string) (fs.FileInfo, error)
+}
+
 // Config holds walker options.
 type Config struct {
 	// Threads is the number of walker workers.
@@ -32,6 +37,10 @@ type Config struct {
 	// EmitDirs emits directory entries in addition to files. Supplied directory
 	// roots are traversal anchors and are not emitted.
 	EmitDirs bool
+	// EmitSymlinks emits symbolic links as entries when FollowSymlinks is false.
+	EmitSymlinks bool
+	// IgnoreDanglingSymlinks skips not-found errors from followed symbolic links.
+	IgnoreDanglingSymlinks bool
 	// MinDepth filters emitted entries below this root-relative depth.
 	MinDepth int
 	// MaxDepth filters emitted entries deeper than this root-relative depth.
@@ -320,6 +329,13 @@ func (w *Walker) isSymlink(path string) bool {
 	return err == nil
 }
 
+func (w *Walker) lstat(path string) (fs.FileInfo, error) {
+	if fsys, ok := w.fsys.(lstatProvider); ok {
+		return fsys.Lstat(path)
+	}
+	return nil, fmt.Errorf("filesystem does not support symbolic-link metadata")
+}
+
 // Run walks paths and sends entries to fileCh.
 // fileCh is closed when all work is done. Traversal errors are skipped to
 // preserve the original walker contract; use RunWithErrors to receive them.
@@ -356,7 +372,26 @@ func (w *Walker) RunWithErrors(ctx context.Context, paths []string, fileCh chan<
 	for _, p := range paths {
 		p = filepath.ToSlash(filepath.Clean(p))
 
+		isSymlink := w.isSymlink(p)
 		info, err := fs.Stat(w.fsys, p)
+		if isSymlink && !w.cfg.FollowSymlinks {
+			if !w.cfg.EmitSymlinks {
+				continue
+			}
+			if linkInfo, linkErr := w.lstat(p); linkErr == nil {
+				info = linkInfo
+				err = nil
+			}
+			if err != nil {
+				if !errors.Is(err, fs.ErrNotExist) {
+					reportError(fmt.Errorf("stat %q: %w", p, err))
+				}
+				continue
+			}
+		}
+		if isSymlink && w.cfg.FollowSymlinks && err != nil && w.cfg.IgnoreDanglingSymlinks && errors.Is(err, fs.ErrNotExist) {
+			continue
+		}
 		if err == nil && !info.IsDir() {
 			// Explicit file target: search it
 			if w.shouldSearch(p, info) && w.shouldEmit(0) {
@@ -380,7 +415,7 @@ func (w *Walker) RunWithErrors(ctx context.Context, paths []string, fileCh chan<
 					Path:    p,
 					Info:    info,
 					Kind:    EntryFile,
-					Symlink: w.isSymlink(p),
+					Symlink: isSymlink,
 					Depth:   0,
 				}:
 				}
@@ -453,18 +488,30 @@ func (w *Walker) walkWorker(ctx context.Context, queue *dirQueue, fileCh chan<- 
 				path = dir + "/" + name
 			}
 
+			isSymlink := entry.Type()&fs.ModeSymlink != 0
 			isDir := entry.IsDir()
 			var info fs.FileInfo
-			if entry.Type()&fs.ModeSymlink != 0 {
+			if isSymlink {
 				if !w.cfg.FollowSymlinks {
-					continue
+					if !w.cfg.EmitSymlinks {
+						continue
+					}
+					info, err = entry.Info()
+					if err != nil {
+						reportError(fmt.Errorf("stat %q: %w", path, err))
+						continue
+					}
+					isDir = false
+				} else {
+					info, err = fs.Stat(w.fsys, path)
+					if err != nil {
+						if !(w.cfg.IgnoreDanglingSymlinks && errors.Is(err, fs.ErrNotExist)) {
+							reportError(fmt.Errorf("stat %q: %w", path, err))
+						}
+						continue
+					}
+					isDir = info.IsDir()
 				}
-				info, err = fs.Stat(w.fsys, path)
-				if err != nil {
-					reportError(fmt.Errorf("stat %q: %w", path, err))
-					continue
-				}
-				isDir = info.IsDir()
 			}
 
 			if w.ignoreEngine.ShouldIgnore(path, isDir, ictx) {
@@ -485,7 +532,7 @@ func (w *Walker) walkWorker(ctx context.Context, queue *dirQueue, fileCh chan<- 
 						Path:    path,
 						Info:    info,
 						Kind:    EntryDirectory,
-						Symlink: entry.Type()&fs.ModeSymlink != 0,
+						Symlink: isSymlink,
 						Depth:   depth,
 					}:
 					}
@@ -530,7 +577,7 @@ func (w *Walker) walkWorker(ctx context.Context, queue *dirQueue, fileCh chan<- 
 				Path:    path,
 				Info:    info,
 				Kind:    EntryFile,
-				Symlink: entry.Type()&fs.ModeSymlink != 0,
+				Symlink: isSymlink,
 				Depth:   depth,
 			}:
 			}

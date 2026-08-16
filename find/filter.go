@@ -58,14 +58,14 @@ type Config struct {
 
 // Filter applies finder matching and metadata predicates to walk entries.
 type Filter struct {
-	matcher       *Matcher
-	types         map[Type]struct{}
-	extensions    map[string]struct{}
-	minSize       int64
-	maxSize       int64
-	maxSizeSet    bool
-	ignoreCase    bool
-	matchAllTypes bool
+	matcher        *Matcher
+	types          map[Type]struct{}
+	extensions     map[string]struct{}
+	minSize        int64
+	maxSize        int64
+	maxSizeSet     bool
+	matchAllTypes  bool
+	followSymlinks bool
 }
 
 // WalkerConfig returns the traversal settings required by finder mode.
@@ -74,6 +74,8 @@ type Filter struct {
 func (c Config) WalkerConfig() walk.Config {
 	cfg := c.Walk
 	cfg.EmitDirs = true
+	cfg.EmitSymlinks = true
+	cfg.IgnoreDanglingSymlinks = true
 	return cfg
 }
 
@@ -111,10 +113,7 @@ func NewFilter(cfg Config) (*Filter, error) {
 
 	extensions := make(map[string]struct{}, len(cfg.Extensions))
 	for _, extension := range cfg.Extensions {
-		extension = strings.TrimPrefix(extension, ".")
-		if cfg.Matcher.IgnoreCase {
-			extension = strings.ToLower(extension)
-		}
+		extension = strings.ToLower(strings.TrimPrefix(extension, "."))
 		if extension == "" {
 			return nil, fmt.Errorf("find: extension must not be empty")
 		}
@@ -122,14 +121,14 @@ func NewFilter(cfg Config) (*Filter, error) {
 	}
 
 	return &Filter{
-		matcher:       matcher,
-		types:         types,
-		extensions:    extensions,
-		minSize:       cfg.MinSize,
-		maxSize:       cfg.MaxSize,
-		maxSizeSet:    cfg.MaxSizeSet,
-		ignoreCase:    cfg.Matcher.IgnoreCase,
-		matchAllTypes: len(types) == 0,
+		matcher:        matcher,
+		types:          types,
+		extensions:     extensions,
+		minSize:        cfg.MinSize,
+		maxSize:        cfg.MaxSize,
+		maxSizeSet:     cfg.MaxSizeSet,
+		matchAllTypes:  len(types) == 0,
+		followSymlinks: cfg.Walk.FollowSymlinks,
 	}, nil
 }
 
@@ -158,7 +157,7 @@ func (f *Filter) matchType(entry walk.Entry) bool {
 		return true
 	}
 
-	if entry.Symlink {
+	if entry.Symlink && !f.followSymlinks {
 		_, ok := f.types[TypeSymlink]
 		return ok
 	}
@@ -193,10 +192,7 @@ func (f *Filter) matchExtension(entry walk.Entry) bool {
 		return false
 	}
 
-	extension := strings.TrimPrefix(path.Ext(entry.DisplayPath()), ".")
-	if f.ignoreCase {
-		extension = strings.ToLower(extension)
-	}
+	extension := strings.ToLower(strings.TrimPrefix(path.Ext(entry.DisplayPath()), "."))
 	_, ok := f.extensions[extension]
 	return ok
 }

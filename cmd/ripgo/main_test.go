@@ -23,6 +23,15 @@ func TestRunFind(t *testing.T) {
 	}
 }
 
+func TestRunVersions(t *testing.T) {
+	for _, args := range [][]string{{"--version"}, {"find", "--version"}, {"search", "--version"}} {
+		status, output, stderr := captureRun(t, args...)
+		if status != 0 || output != "0.1.0\n" || stderr != "" {
+			t.Fatalf("args=%v status=%d output=%q stderr=%q", args, status, output, stderr)
+		}
+	}
+}
+
 func TestRunFindNoMatch(t *testing.T) {
 	root := t.TempDir()
 	writeCLIFile(t, filepath.Join(root, "main.go"), "package main")

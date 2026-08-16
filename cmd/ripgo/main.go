@@ -32,6 +32,11 @@ func run(ctx context.Context) int {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 			return 2
 		}
+		if opts.Version {
+			fmt.Println(cli.Version)
+			return 0
+		}
+		normalizeFindPositionals(&opts)
 		return runFind(ctx, opts)
 	}
 	if len(args) > 0 && (args[0] == "--help" || args[0] == "-h") {
@@ -60,6 +65,10 @@ func run(ctx context.Context) int {
 	if _, err := parser.Parse(args); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		return 1
+	}
+	if opts.Version {
+		fmt.Println(cli.Version)
+		return 0
 	}
 	return runSearch(ctx, opts)
 }
@@ -140,6 +149,7 @@ func runSearch(ctx context.Context, opts cli.Options) int {
 }
 
 func runFind(ctx context.Context, opts cli.FindOptions) int {
+	normalizeFindPositionals(&opts)
 	cfg, err := config.NewFind(opts)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
@@ -215,6 +225,17 @@ func runFind(ctx context.Context, opts cli.FindOptions) int {
 		return 1
 	}
 	return 0
+}
+
+func normalizeFindPositionals(opts *cli.FindOptions) {
+	if opts.Pattern == "" {
+		return
+	}
+	if _, err := os.Lstat(opts.Pattern); err != nil {
+		return
+	}
+	opts.Paths = append([]string{opts.Pattern}, opts.Paths...)
+	opts.Pattern = ""
 }
 
 func sortResults(results []search.Result, mode string) {

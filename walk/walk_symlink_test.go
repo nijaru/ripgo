@@ -49,6 +49,27 @@ func TestWalkerSymlinks(t *testing.T) {
 		}
 	})
 
+	t.Run("EmitSymlinksWithoutFollow", func(t *testing.T) {
+		entries := collectEntries(t, NewWalker(nil, Config{
+			EmitSymlinks: true,
+		}, engine), root)
+		got := make(map[string]Entry)
+		for _, entry := range entries {
+			got[filepath.Base(entry.Path)] = entry
+		}
+		for _, name := range []string{"link-dir", "link-file"} {
+			entry, ok := got[name]
+			if !ok || !entry.Symlink || entry.Kind != EntryFile {
+				t.Errorf("entry %q = %+v, want emitted non-followed symlink file", name, entry)
+			}
+		}
+		for _, entry := range entries {
+			if entry.Path == filepath.Join(linkDir, "a.txt") {
+				t.Fatal("non-followed directory symlink was traversed")
+			}
+		}
+	})
+
 	t.Run("FollowSymlinks=true", func(t *testing.T) {
 		w := NewWalker(nil, Config{FollowSymlinks: true}, engine)
 		files := collectFiles(t, w, root)

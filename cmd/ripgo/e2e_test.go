@@ -28,6 +28,8 @@ func TestFindBuiltCLI(t *testing.T) {
 	writeCLIFile(t, filepath.Join(root, ".gitignore"), "ignored/\n")
 	linkPath := filepath.Join(root, "link.go")
 	linkErr := os.Symlink("root.go", linkPath)
+	danglingPath := filepath.Join(root, "dangling")
+	danglingErr := os.Symlink("missing", danglingPath)
 
 	t.Run("regex and glob", func(t *testing.T) {
 		result := runBinary(t, binary, "find", "main", root)
@@ -43,8 +45,8 @@ func TestFindBuiltCLI(t *testing.T) {
 			t.Fatalf("glob status=%d stderr=%q", result.status, result.stderr)
 		}
 		lines := nonEmptyLines(result.stdout)
-		if !sort.StringsAreSorted(lines) || len(lines) != 3 {
-			t.Fatalf("glob lines=%v, want sorted visible go files", lines)
+		if !sort.StringsAreSorted(lines) || len(lines) != 4 {
+			t.Fatalf("glob lines=%v, want sorted visible go files and link", lines)
 		}
 	})
 
@@ -69,6 +71,11 @@ func TestFindBuiltCLI(t *testing.T) {
 			t.Fatalf("depth status=%d stdout=%q stderr=%q", result.status, result.stdout, result.stderr)
 		}
 
+		result = runBinary(t, binary, "find", "--type", "d", "--max-depth", "1", root)
+		if result.status != 0 || !strings.Contains(result.stdout, filepath.Join(root, "src")) {
+			t.Fatalf("path-only find status=%d stdout=%q stderr=%q", result.status, result.stdout, result.stderr)
+		}
+
 		result = runBinary(t, binary, "find", "--glob", "*.go", "--absolute", "--print0", root)
 		if result.status != 0 || !strings.Contains(result.stdout, "\x00") || strings.Contains(result.stdout, "\n") {
 			t.Fatalf("print0 status=%d stdout=%q stderr=%q", result.status, result.stdout, result.stderr)
@@ -77,16 +84,24 @@ func TestFindBuiltCLI(t *testing.T) {
 
 	if linkErr == nil {
 		t.Run("symlink", func(t *testing.T) {
-			result := runBinary(t, binary, "find", "", "--type", "l", root)
-			if result.status != 1 || result.stdout != "" {
-				t.Fatalf("without follow result=%+v, want no symlink result", result)
+			result := runBinary(t, binary, "find", "--type", "l", root)
+			if result.status != 0 || !strings.Contains(result.stdout, linkPath) {
+				t.Fatalf("without follow result=%+v, want link path", result)
 			}
 
-			result = runBinary(t, binary, "find", "", "--type", "l", "--follow-symlinks", root)
-			if result.status != 0 || !strings.Contains(result.stdout, linkPath) {
-				t.Fatalf("with follow result=%+v, want link path", result)
+			result = runBinary(t, binary, "find", "--type", "l", "--follow-symlinks", root)
+			if result.status != 1 || result.stdout != "" {
+				t.Fatalf("with follow result=%+v, want no symlink result", result)
+			}
+
+			result = runBinary(t, binary, "find", "--type", "f", "--follow-symlinks", root)
+			if result.status != 0 || !strings.Contains(result.stdout, linkPath) || result.stderr != "" {
+				t.Fatalf("followed file result=%+v, want link path without dangling-link error", result)
 			}
 		})
+	}
+	if danglingErr != nil {
+		t.Logf("dangling symlink unavailable: %v", danglingErr)
 	}
 
 	t.Run("no match and malformed arguments", func(t *testing.T) {

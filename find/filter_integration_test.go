@@ -3,6 +3,7 @@ package find
 import (
 	"os"
 	"path/filepath"
+	"sort"
 	"testing"
 
 	"github.com/nijaru/ripgo/ignore"
@@ -64,8 +65,9 @@ func TestConfigTraversalAndFilters(t *testing.T) {
 			got = append(got, filepath.Base(entry.Path))
 		}
 	}
-	if len(got) != 1 || got[0] != "visible.go" {
-		t.Fatalf("filtered paths = %v, want [visible.go]", got)
+	sort.Strings(got)
+	if len(got) != 2 || got[0] != "link.go" || got[1] != "visible.go" {
+		t.Fatalf("filtered paths = %v, want [link.go visible.go]", got)
 	}
 
 	symlinkConfig := config
@@ -74,7 +76,18 @@ func TestConfigTraversalAndFilters(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !symlinkFilter.Match(walk.Entry{Path: link, Kind: walk.EntryFile, Symlink: true}) {
-		t.Fatal("symlink type filter rejected a followed file link")
+	if symlinkFilter.Match(walk.Entry{Path: link, Kind: walk.EntryFile, Symlink: true}) {
+		t.Fatal("symlink type filter accepted a followed file link")
+	}
+
+	fileFilter, err := NewFilter(Config{
+		Types: []Type{TypeFile},
+		Walk:  walk.Config{FollowSymlinks: true},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !fileFilter.Match(walk.Entry{Path: link, Kind: walk.EntryFile, Symlink: true}) {
+		t.Fatal("file type filter rejected a followed file link")
 	}
 }
