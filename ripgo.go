@@ -317,6 +317,13 @@ func WithFindHidden(v bool) FindOption {
 	return func(c *findpkg.Config) { c.Ignore.Hidden = v }
 }
 
+// WithFindGlobExcludes excludes matching paths from finder traversal.
+func WithFindGlobExcludes(globs ...string) FindOption {
+	return func(c *findpkg.Config) {
+		c.Ignore.GlobExcludes = append(c.Ignore.GlobExcludes, globs...)
+	}
+}
+
 // WithFindNoIgnore disables ignore-file loading.
 func WithFindNoIgnore(v bool) FindOption {
 	return func(c *findpkg.Config) { c.Ignore.NoIgnore = v }

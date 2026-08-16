@@ -5,6 +5,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 	"sync/atomic"
 	"testing"
 	"testing/fstest"
@@ -189,6 +190,33 @@ func TestFindMapFS(t *testing.T) {
 	}
 	if len(paths) != 1 || paths[0] != "src/main.go" {
 		t.Fatalf("found paths = %v, want [src/main.go]", paths)
+	}
+}
+
+func TestFindGlobExcludesWithHiddenPaths(t *testing.T) {
+	fsys := fstest.MapFS{
+		".hidden.go":  &fstest.MapFile{Data: []byte("package hidden")},
+		".git/config": &fstest.MapFile{Data: []byte("internal")},
+		"visible.go":  &fstest.MapFile{Data: []byte("package visible")},
+	}
+
+	var paths []string
+	for result, err := range Find(t.Context(), "", nil,
+		WithFindFS(fsys),
+		WithFindHidden(true),
+		WithFindType(findpkg.TypeFile),
+		WithFindGlobExcludes(".git", ".git/**"),
+	) {
+		if err != nil {
+			t.Fatal(err)
+		}
+		paths = append(paths, result.Path)
+	}
+	if slices.Equal(paths, []string{".git/config"}) {
+		t.Fatalf("finder emitted excluded .git path: %v", paths)
+	}
+	if !slices.Contains(paths, ".hidden.go") || !slices.Contains(paths, "visible.go") {
+		t.Fatalf("finder paths = %v, want hidden and visible files", paths)
 	}
 }
 
