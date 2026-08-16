@@ -1,6 +1,6 @@
 # ripgo
 
-Ripgrep-compatible search engine designed library-first in idiomatic Go. Each package is independently importable with zero CLI dependencies.
+Ripgrep-compatible content search and fd-like path finding, designed library-first in idiomatic Go. Each package is independently importable with zero CLI dependencies.
 
 ## Quick Start
 
@@ -35,6 +35,35 @@ func main() {
 }
 ```
 
+### High-Level API (`ripgo.Find`)
+
+Use the finder for fd-style name and metadata queries. It streams metadata-only results and does not read file contents:
+
+```go
+import (
+	"context"
+	"fmt"
+	"log"
+
+	"github.com/nijaru/ripgo"
+	"github.com/nijaru/ripgo/find"
+)
+
+func main() {
+	ctx := context.Background()
+	for result, err := range ripgo.Find(ctx, `\.go$`, []string{"."},
+		ripgo.WithFindType(find.TypeFile),
+		ripgo.WithFindExtension("go"),
+	) {
+		if err != nil {
+			log.Printf("error: %v", err)
+			continue
+		}
+		fmt.Println(result.Path)
+	}
+}
+```
+
 ### Low-Level Package Composition
 
 ```go
@@ -56,7 +85,8 @@ p.PrintResult(result)
 
 | Package | Purpose | Key Types |
 |---|---|---|
-| [`ripgo`](doc.go) | High-level orchestrator & `iter.Seq2` streaming API | `Search()`, `Option` |
+| [`ripgo`](doc.go) | High-level search and finder orchestration with `iter.Seq2` | `Search()`, `Find()`, `Option`, `FindOption` |
+| [`find`](find/) | Filename, path, and metadata matching for finder mode | `Matcher`, `Filter`, `Result` |
 | [`pattern`](pattern/) | Literal fast-path, regex RE2, and PCRE2 matching | `Matcher`, `Config`, `New()` |
 | [`search`](search/) | File scanning, mmap, line context, replace (`-r`), only-matching (`-o`) | `Searcher`, `Result`, `Match`, `Entry` |
 | [`walk`](walk/) | Depth-first concurrent traversal, lazy stats, binary detection | `Walker`, `Entry` |
@@ -66,7 +96,7 @@ p.PrintResult(result)
 
 ## CLI
 
-A thin CLI harness is included at `cmd/ripgo` for benchmarking and testing:
+A thin CLI is included at `cmd/ripgo`:
 
 ```bash
 go install github.com/nijaru/ripgo/cmd/ripgo@latest
@@ -74,16 +104,13 @@ go install github.com/nijaru/ripgo/cmd/ripgo@latest
 ripgo "TODO" .
 ripgo -n -C 3 -t go "func main" .
 ripgo -o "\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b" .
+
+# Find paths by name, without reading file contents
+ripgo find --glob '*.go' --type f .
+ripgo find --type d --max-depth 2 .
 ```
 
-## Performance
-
-Benchmarked against `rg` (ripgrep) across 15,000 Go source files in the Kubernetes 1.31 repository:
-
-| Tool | Mean Time |
-|---|---|
-| `rg` (ripgrep) | 593 ms |
-| `ripgo` | 661 ms |
+`ripgo find` is a read-only fd-like subset. It supports regex, glob, fixed-string, type, extension, size, depth, ignore, symlink, and path-output filters. It does not yet implement fd actions such as `--exec` or `--delete`; see `ripgo find --help` for the current surface.
 
 ## License
 

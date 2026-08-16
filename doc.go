@@ -1,7 +1,8 @@
-// Package ripgo provides a high-level API for searching files.
+// Package ripgo provides high-level APIs for searching file contents and
+// finding filesystem paths.
 //
-// It orchestrates traversal (walk), filtering (ignore), and pattern matching (pattern)
-// into a simple, unified interface for library consumers.
+// It orchestrates traversal (walk), filtering (ignore), and matching (pattern
+// and find) into simple streaming interfaces for library consumers.
 //
 // # Basic Usage
 //
@@ -16,6 +17,18 @@
 //	        continue
 //	    }
 //	    fmt.Printf("%s: %d matches\n", res.Path, len(res.Matches))
+//	}
+//
+// # Finding Paths
+//
+// Find matches names and metadata without reading file contents:
+//
+//	for result, err := range ripgo.Find(ctx, `\.go$`, []string{"."},
+//		ripgo.WithFindType(find.TypeFile)) {
+//		if err != nil {
+//			continue
+//		}
+//		fmt.Println(result.Path)
 //	}
 //
 // # Functional Options
@@ -39,6 +52,7 @@
 //
 // The project is divided into several focused packages:
 //   - github.com/nijaru/ripgo/search: File scanning and match reporting.
+//   - github.com/nijaru/ripgo/find: Filename, path, and metadata matching.
 //   - github.com/nijaru/ripgo/pattern: Multi-engine pattern matching (Literal, Regex, PCRE2).
 //   - github.com/nijaru/ripgo/walk: Parallel directory traversal.
 //   - github.com/nijaru/ripgo/ignore: Gitignore-compatible filtering logic.
