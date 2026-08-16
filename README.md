@@ -112,6 +112,20 @@ ripgo find --type d --max-depth 2 .
 
 `ripgo find` is a read-only fd-like subset. It supports regex, glob, fixed-string, type, extension, size, depth, ignore, symlink, and path-output filters. It does not yet implement fd actions such as `--exec` or `--delete`; see `ripgo find --help` for the current surface.
 
+## Finder benchmark
+
+Run the reproducible local comparison with `fd`:
+
+```bash
+scripts/bench_find.sh
+```
+
+The script creates a disposable fixture, builds a trimmed ripgo binary, and
+runs paired path-listing, matching, depth, ignore, and symlink workloads with
+Hyperfine. It records tool versions, fixture shape, warmups, measured runs, and
+Markdown results in `tmp/bench_find.md`. Results are machine-specific evidence,
+not a general performance claim.
+
 ## License
 
 MIT
