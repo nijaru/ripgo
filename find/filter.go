@@ -232,7 +232,8 @@ func (f *Filter) matchExtension(entry walk.Entry) bool {
 type Result struct {
 	// Path is the stable display path of the matched entry.
 	Path string
-	// Info is the metadata snapshot used by filters.
+	// Info is the metadata snapshot used by filters. It is nil when the
+	// finder is configured with Config.OmitInfo.
 	Info fs.FileInfo
 	// Kind identifies whether the result is a file or directory.
 	Kind walk.EntryKind
