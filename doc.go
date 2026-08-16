@@ -55,5 +55,6 @@
 //   - github.com/nijaru/ripgo/find: Filename, path, and metadata matching.
 //   - github.com/nijaru/ripgo/pattern: Multi-engine pattern matching (Literal, Regex, PCRE2).
 //   - github.com/nijaru/ripgo/walk: Parallel directory traversal.
+//   - github.com/nijaru/ripgo/fsref: Capability-backed file access.
 //   - github.com/nijaru/ripgo/ignore: Gitignore-compatible filtering logic.
 package ripgo

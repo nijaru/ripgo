@@ -219,6 +219,23 @@ func TestWalkerEmitsDirectoriesAndMetadata(t *testing.T) {
 	}
 }
 
+func TestWalkerLazyFileInfo(t *testing.T) {
+	root, _ := setupTestDir(t, map[string]string{"main.go": "package main"})
+	engine := newTestEngine(t, ignore.Config{NoIgnore: true, Hidden: true})
+	w := NewWalker(nil, Config{Threads: 1, LazyFileInfo: true}, engine)
+	entries := collectEntries(t, w, root)
+	if len(entries) != 1 {
+		t.Fatalf("got %d entries, want one", len(entries))
+	}
+	entry := entries[0]
+	if entry.Info != nil {
+		t.Fatalf("entry.Info = %v, want lazy nil metadata", entry.Info)
+	}
+	if entry.File == nil || entry.File.Info() == nil {
+		t.Fatalf("entry.File = %v, want a ref that resolves metadata", entry.File)
+	}
+}
+
 func TestWalkerDoesNotEmitIgnoredDirectories(t *testing.T) {
 	root, _ := setupTestDir(t, map[string]string{
 		".gitignore":  "dist/\n",

@@ -39,6 +39,10 @@ type Config struct {
 	EmitDirs bool
 	// EmitSymlinks emits symbolic links as entries when FollowSymlinks is false.
 	EmitSymlinks bool
+	// LazyFileInfo omits regular-file metadata from emitted entries until the
+	// consumer resolves it through Entry.ResolveInfo or Entry.File. The default
+	// keeps metadata eager.
+	LazyFileInfo bool
 	// IgnoreDanglingSymlinks skips not-found errors from followed symbolic links.
 	IgnoreDanglingSymlinks bool
 	// MinDepth filters emitted entries below this root-relative depth.
@@ -68,7 +72,8 @@ type Entry struct {
 	File fsref.Ref
 	// Path is the stable user-facing path.
 	Path string
-	// Info is the metadata discovered during walking.
+	// Info is the metadata discovered during walking. It may be nil when the
+	// walker is configured with LazyFileInfo for a regular file.
 	Info fs.FileInfo
 	// Kind identifies whether this is a file or directory.
 	Kind EntryKind
@@ -78,6 +83,24 @@ type Entry struct {
 	// Depth is relative to the supplied traversal root. Explicit file targets
 	// have depth zero; children of a directory root start at depth one.
 	Depth int
+
+	infoSource fs.DirEntry
+}
+
+// ResolveInfo materializes metadata omitted by LazyFileInfo.
+func (e *Entry) ResolveInfo() (fs.FileInfo, error) {
+	if e.Info != nil {
+		return e.Info, nil
+	}
+	if e.infoSource == nil {
+		return nil, fmt.Errorf("metadata unavailable for %q", e.Path)
+	}
+	info, err := e.infoSource.Info()
+	if err != nil {
+		return nil, err
+	}
+	e.Info = info
+	return info, nil
 }
 
 // DisplayPath returns the stable user-facing path for the entry.
@@ -547,7 +570,7 @@ func (w *Walker) walkWorker(ctx context.Context, queue *dirQueue, fileCh chan<- 
 				continue
 			}
 
-			if info == nil {
+			if info == nil && (!w.cfg.LazyFileInfo || w.cfg.MaxFileSize > 0) {
 				info, err = entry.Info()
 				if err != nil {
 					reportError(fmt.Errorf("stat %q: %w", path, err))
@@ -573,12 +596,13 @@ func (w *Walker) walkWorker(ctx context.Context, queue *dirQueue, fileCh chan<- 
 				queue.Done()
 				return
 			case fileCh <- Entry{
-				File:    ref,
-				Path:    path,
-				Info:    info,
-				Kind:    EntryFile,
-				Symlink: isSymlink,
-				Depth:   depth,
+				File:       ref,
+				Path:       path,
+				Info:       info,
+				Kind:       EntryFile,
+				Symlink:    isSymlink,
+				Depth:      depth,
+				infoSource: entry,
 			}:
 			}
 		}

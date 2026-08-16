@@ -2,8 +2,10 @@ package ripgo
 
 import (
 	"context"
+	"io/fs"
 	"os"
 	"path/filepath"
+	"sync/atomic"
 	"testing"
 	"testing/fstest"
 
@@ -222,6 +224,56 @@ func TestFindDirectoriesAndExplicitFile(t *testing.T) {
 	if len(files) != 1 || files[0].Path != "src/main.go" || files[0].Depth != 0 {
 		t.Fatalf("explicit file results = %+v, want depth-zero file", files)
 	}
+}
+
+func TestFindDirectoryFilterAvoidsFileMetadata(t *testing.T) {
+	fsys := &countingMapFS{MapFS: fstest.MapFS{
+		"src/main.go": &fstest.MapFile{Data: []byte("package main")},
+	}}
+	var dirs []findpkg.Result
+	for result, err := range Find(t.Context(), "", nil,
+		WithFindFS(fsys),
+		WithFindType(findpkg.TypeDirectory),
+		WithFindNoIgnore(true),
+	) {
+		if err != nil {
+			t.Fatal(err)
+		}
+		dirs = append(dirs, result)
+	}
+	if len(dirs) != 1 || dirs[0].Path != "src" || dirs[0].Info == nil {
+		t.Fatalf("directory results = %+v, want src metadata", dirs)
+	}
+	if got := fsys.infoCalls.Load(); got != 1 {
+		t.Fatalf("file metadata calls = %d, want only the emitted directory metadata", got)
+	}
+}
+
+type countingMapFS struct {
+	fstest.MapFS
+	infoCalls atomic.Int64
+}
+
+type countingDirEntry struct {
+	fs.DirEntry
+	calls *atomic.Int64
+}
+
+func (e countingDirEntry) Info() (fs.FileInfo, error) {
+	e.calls.Add(1)
+	return e.DirEntry.Info()
+}
+
+func (f *countingMapFS) ReadDir(name string) ([]fs.DirEntry, error) {
+	entries, err := fs.ReadDir(f.MapFS, name)
+	if err != nil {
+		return nil, err
+	}
+	wrapped := make([]fs.DirEntry, len(entries))
+	for i, entry := range entries {
+		wrapped[i] = countingDirEntry{DirEntry: entry, calls: &f.infoCalls}
+	}
+	return wrapped, nil
 }
 
 func TestFindReportsPermissionErrors(t *testing.T) {

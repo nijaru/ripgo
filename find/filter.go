@@ -75,8 +75,21 @@ func (c Config) WalkerConfig() walk.Config {
 	cfg := c.Walk
 	cfg.EmitDirs = true
 	cfg.EmitSymlinks = true
+	cfg.LazyFileInfo = c.lazyFileInfo()
 	cfg.IgnoreDanglingSymlinks = true
 	return cfg
+}
+
+func (c Config) lazyFileInfo() bool {
+	if len(c.Types) == 0 {
+		return false
+	}
+	for _, typ := range c.Types {
+		if typ == TypeFile {
+			return false
+		}
+	}
+	return true
 }
 
 // IgnoreConfig returns the ignore and hidden-entry settings for traversal.

@@ -133,8 +133,13 @@ func TestConfigTraversalSettings(t *testing.T) {
 		},
 	}
 	walkConfig := config.WalkerConfig()
-	if !walkConfig.EmitDirs || !walkConfig.EmitSymlinks || !walkConfig.IgnoreDanglingSymlinks || !walkConfig.FollowSymlinks || walkConfig.MinDepth != 2 || walkConfig.MaxDepth != 3 || !walkConfig.MaxDepthSet {
-		t.Fatalf("WalkerConfig() = %+v, want finder traversal settings with directory emission", walkConfig)
+	if !walkConfig.EmitDirs || !walkConfig.EmitSymlinks || walkConfig.LazyFileInfo || !walkConfig.IgnoreDanglingSymlinks || !walkConfig.FollowSymlinks || walkConfig.MinDepth != 2 || walkConfig.MaxDepth != 3 || !walkConfig.MaxDepthSet {
+		t.Fatalf("WalkerConfig() = %+v, want default finder traversal settings", walkConfig)
+	}
+
+	config.Types = []Type{TypeDirectory}
+	if !config.WalkerConfig().LazyFileInfo {
+		t.Fatal("directory-only finder did not enable lazy file metadata")
 	}
 }
 

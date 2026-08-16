@@ -7,6 +7,7 @@ package ripgo
 
 import (
 	"context"
+	"fmt"
 	"io/fs"
 	"iter"
 	"path"
@@ -201,6 +202,14 @@ func Find(ctx context.Context, pattern string, paths []string, opts ...FindOptio
 				matchPath := findMatchPath(entry.DisplayPath(), roots)
 				if !filter.MatchPath(entry, matchPath) {
 					continue
+				}
+				if entry.Info == nil {
+					if _, err := entry.ResolveInfo(); err != nil {
+						if !yield(findpkg.Result{}, fmt.Errorf("stat %q: %w", entry.Path, err)) {
+							return
+						}
+						continue
+					}
 				}
 				if !yield(findpkg.NewResult(entry), nil) {
 					return
