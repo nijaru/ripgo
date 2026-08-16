@@ -51,6 +51,9 @@ type Config struct {
 	Walk walk.Config
 	// Ignore controls hidden and ignore-file behavior during traversal.
 	Ignore ignore.Config
+	// OmitInfo leaves Result.Info nil and avoids resolving regular-file
+	// metadata. It cannot be combined with size filters.
+	OmitInfo bool
 	// FS selects the filesystem used by the high-level finder API. Nil uses the
 	// local operating-system filesystem.
 	FS fs.FS
@@ -75,7 +78,7 @@ func (c Config) WalkerConfig() walk.Config {
 	cfg := c.Walk
 	cfg.EmitDirs = c.emitsType(TypeDirectory)
 	cfg.EmitSymlinks = c.emitsType(TypeSymlink)
-	cfg.LazyFileInfo = c.lazyFileInfo()
+	cfg.LazyFileInfo = c.OmitInfo || c.lazyFileInfo()
 	cfg.IgnoreDanglingSymlinks = true
 	return cfg
 }
@@ -111,6 +114,9 @@ func (c Config) IgnoreConfig() ignore.Config {
 
 // NewFilter validates cfg and compiles its matching and metadata predicates.
 func NewFilter(cfg Config) (*Filter, error) {
+	if cfg.OmitInfo && (cfg.MinSize != 0 || cfg.MaxSizeSet) {
+		return nil, fmt.Errorf("find: metadata cannot be omitted when size filters are enabled")
+	}
 	if cfg.MinSize < 0 {
 		return nil, fmt.Errorf("find: minimum size must not be negative: %d", cfg.MinSize)
 	}

@@ -220,6 +220,34 @@ func TestFindGlobExcludesWithHiddenPaths(t *testing.T) {
 	}
 }
 
+func TestFindOmitMetadata(t *testing.T) {
+	fsys := &countingMapFS{MapFS: fstest.MapFS{
+		"main.go": &fstest.MapFile{Data: []byte("package main")},
+	}}
+
+	var result findpkg.Result
+	found := false
+	for got, err := range Find(t.Context(), "*.go", nil,
+		WithFindFS(fsys),
+		WithFindGlob(true),
+		WithFindType(findpkg.TypeFile),
+		WithFindMetadata(false),
+		WithFindNoIgnore(true),
+	) {
+		if err != nil {
+			t.Fatal(err)
+		}
+		result = got
+		found = true
+	}
+	if !found || result.Path != "main.go" || result.Info != nil {
+		t.Fatalf("result = %+v, want path-only metadata", result)
+	}
+	if got := fsys.infoCalls.Load(); got != 0 {
+		t.Fatalf("file metadata calls = %d, want none", got)
+	}
+}
+
 func TestFindDirectoriesAndExplicitFile(t *testing.T) {
 	fsys := fstest.MapFS{
 		"src/main.go": &fstest.MapFile{Data: []byte("package main")},

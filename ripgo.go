@@ -203,7 +203,7 @@ func Find(ctx context.Context, pattern string, paths []string, opts ...FindOptio
 				if !filter.MatchPath(entry, matchPath) {
 					continue
 				}
-				if entry.Info == nil {
+				if entry.Info == nil && !cfg.OmitInfo {
 					if _, err := entry.ResolveInfo(); err != nil {
 						if !yield(findpkg.Result{}, fmt.Errorf("stat %q: %w", entry.Path, err)) {
 							return
@@ -322,6 +322,13 @@ func WithFindGlobExcludes(globs ...string) FindOption {
 	return func(c *findpkg.Config) {
 		c.Ignore.GlobExcludes = append(c.Ignore.GlobExcludes, globs...)
 	}
+}
+
+// WithFindMetadata controls whether finder results resolve file metadata.
+// Metadata is enabled by default; disabling it leaves Result.Info nil and
+// cannot be combined with size filters.
+func WithFindMetadata(v bool) FindOption {
+	return func(c *findpkg.Config) { c.OmitInfo = !v }
 }
 
 // WithFindNoIgnore disables ignore-file loading.

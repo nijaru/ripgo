@@ -149,6 +149,11 @@ func TestConfigTraversalSettings(t *testing.T) {
 		t.Fatalf("file-only WalkerConfig() = %+v, want file-only eager metadata", walkConfig)
 	}
 
+	config.OmitInfo = true
+	if !config.WalkerConfig().LazyFileInfo {
+		t.Fatal("path-only finder did not enable lazy file metadata")
+	}
+
 	config = Config{Extensions: []string{"go"}}
 	walkConfig = config.WalkerConfig()
 	if walkConfig.EmitDirs || walkConfig.EmitSymlinks {
@@ -161,6 +166,7 @@ func TestNewFilterErrors(t *testing.T) {
 		{MinSize: -1},
 		{MaxSize: -1, MaxSizeSet: true},
 		{MinSize: 4, MaxSize: 3, MaxSizeSet: true},
+		{OmitInfo: true, MinSize: 1},
 		{Types: []Type{Type(99)}},
 		{Extensions: []string{"."}},
 	}
