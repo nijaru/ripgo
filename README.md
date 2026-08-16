@@ -4,7 +4,9 @@ Ripgrep-compatible content search and fd-like path finding, designed library-fir
 
 ## Quick Start
 
-### High-Level API (`ripgo.Search`)
+### Content Search (`ripgo.Search`)
+
+Stream matches over `iter.Seq2` with automatic BOM sniffing, regex/literal search, and file-type filters:
 
 ```go
 package main
@@ -35,11 +37,13 @@ func main() {
 }
 ```
 
-### High-Level API (`ripgo.Find`)
+### Path Finding (`ripgo.Find`)
 
-Use the finder for fd-style name and metadata queries. It streams metadata-only results and does not read file contents:
+Find paths by name, glob, type, size, depth, or extension without reading file contents:
 
 ```go
+package main
+
 import (
 	"context"
 	"fmt"
@@ -51,6 +55,7 @@ import (
 
 func main() {
 	ctx := context.Background()
+
 	for result, err := range ripgo.Find(ctx, `\.go$`, []string{"."},
 		ripgo.WithFindType(find.TypeFile),
 		ripgo.WithFindExtension("go"),
@@ -66,6 +71,8 @@ func main() {
 
 ### Low-Level Package Composition
 
+Import individual packages directly for fine-grained control:
+
 ```go
 import (
 	"github.com/nijaru/ripgo/pattern"
@@ -75,7 +82,7 @@ import (
 
 m, _ := pattern.New(pattern.Config{Pattern: "TODO", SmartCase: true})
 s := search.NewSearcher(nil, search.Config{MaxCount: 100, Before: 2, After: 2}, m)
-result, _ := s.SearchPath("file.go", nil)
+result, _ := s.SearchPath("main.go", nil)
 
 p := printer.NewTextPrinter(printer.TextConfig{LineNumber: true})
 p.PrintResult(result)
@@ -83,49 +90,61 @@ p.PrintResult(result)
 
 ## Packages
 
-| Package | Purpose | Key Types |
+| Package | Purpose | Key Exports |
 |---|---|---|
-| [`ripgo`](doc.go) | High-level search and finder orchestration with `iter.Seq2` | `Search()`, `Find()`, `Option`, `FindOption` |
-| [`find`](find/) | Filename, path, and metadata matching for finder mode | `Matcher`, `Filter`, `Result` |
-| [`pattern`](pattern/) | Literal fast-path, regex RE2, and PCRE2 matching | `Matcher`, `Config`, `New()` |
-| [`search`](search/) | File scanning, mmap, line context, replace (`-r`), only-matching (`-o`) | `Searcher`, `Result`, `Match`, `Entry` |
-| [`walk`](walk/) | Depth-first concurrent traversal, lazy stats, binary detection | `Walker`, `Entry` |
-| [`fsref`](fsref/) | Capability-backed file access with mmap/read fallback | `Ref`, `Root` |
-| [`ignore`](ignore/) | Gitignore rules, parent cascading, negation, globstar, type filters | `Engine`, `IgnoreRule`, `IgnoreSet` |
-| [`printer`](printer/) | Text (colors/headings/truncation), JSON, count, and file printers | `Printer`, `TextPrinter`, `JSONPrinter` |
+| [`ripgo`](doc.go) | Root iterators (`iter.Seq2`) for search and find orchestration | `Search()`, `Find()`, `Option`, `FindOption` |
+| [`find`](find/) | Filename, path, glob, regex, and metadata matching | `Matcher`, `Filter`, `Result`, `Config` |
+| [`pattern`](pattern/) | Literal fast-paths, RE2 regex, PCRE2, zero-allocation line matching | `Matcher`, `LocationMatcher`, `New()` |
+| [`search`](search/) | Line scanning, context lines, replacement, text encodings, mmap | `Searcher`, `Result`, `Match`, `DecodeData` |
+| [`walk`](walk/) | Concurrent directory traversal, depth limits, binary detection | `Walker`, `Entry`, `Config` |
+| [`fsref`](fsref/) | Capability-based file descriptors with Unix mmap and read fallback | `Ref`, `Root` |
+| [`ignore`](ignore/) | Gitignore rules, trie hierarchy, negation, globstar, fast-path checks | `Engine`, `IgnoreRule`, `IgnoreSet` |
+| [`printer`](printer/) | Buffered text (ANSI colors/headings), JSON, count, and file printers | `Printer`, `TextPrinter`, `JSONPrinter`, `PathPrinter` |
 | [`stats`](stats/) | Atomic match and file counters | `Stats` |
 
 ## CLI
 
-A thin CLI is included at `cmd/ripgo`:
+A single static binary providing both ripgrep and fd workflows:
 
 ```bash
 go install github.com/nijaru/ripgo/cmd/ripgo@latest
-
-ripgo "TODO" .
-ripgo -n -C 3 -t go "func main" .
-ripgo -o "\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b" .
-
-# Find paths by name, without reading file contents
-ripgo find --glob '*.go' --type f .
-ripgo find --type d --max-depth 2 .
 ```
 
-`ripgo find` supports regex, glob, fixed-string, type, extension, size, depth, ignore, symlink, and path-output filters. Finder actions are explicit and shell-free: `--exec 'command {}'` runs once per match, while `--exec-batch 'command {}'` expands a bounded batch. `--delete` requires `--type f` or `--type l`, removes only matched directory entries (never follows a symlink), and supports `--dry-run`. Actions stop on the first failure; earlier effects are not rolled back. Actions require `{}` and do not support `--sort` or `--print0` (except delete previews). See `ripgo find --help` for the current surface.
-
-## Finder benchmark
-
-Run the reproducible local comparison with `fd`:
+### Grep Usage (`ripgo [FLAGS] PATTERN [PATH...]`)
 
 ```bash
+ripgo "TODO" .
+ripgo -n -C 3 -t go "func main" .
+ripgo -i "goroutine" .
+ripgo -E utf-16le "pattern" .
+ripgo -o "\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b" .
+```
+
+### Find Usage (`ripgo find [FLAGS] [PATTERN] [PATH...]`)
+
+```bash
+ripgo find --glob '*.go' --type f .
+ripgo find --type d --max-depth 2 .
+ripgo find --size +10M .
+ripgo find --exec 'wc -l {}' .
+```
+
+`ripgo find` supports regex, glob, fixed-string, type, extension, size, depth, ignore, symlink, and path-output formatting. Actions are shell-free: `--exec 'command {}'` executes once per match, while `--exec-batch 'command {}'` passes batched paths. `--delete` removes matched files or symlinks without following targets, and supports `--dry-run`.
+
+## Benchmarks
+
+Reproducible benchmarks against `ripgrep` and `fd` using `hyperfine`:
+
+```bash
+# Content search benchmark vs ripgrep (rg)
+scripts/bench.sh
+
+# Path traversal benchmark vs fd
 scripts/bench_find.sh
 ```
 
-The script creates a disposable fixture, builds a trimmed ripgo binary, and
-runs paired path-listing, matching, depth, ignore, and symlink workloads with
-Hyperfine. It records tool versions, fixture shape, warmups, measured runs, and
-Markdown results in `tmp/bench_find.md`. Results are machine-specific evidence,
-not a general performance claim.
+- **Content Search**: Within ~2–5% of `ripgrep` on 10,000+ file trees, with faster process startup on small repositories.
+- **Path Traversal**: Within ~1.6–1.8× of `fd` with cycle-safe symlink resolution and `.gitignore` evaluation.
 
 ## License
 

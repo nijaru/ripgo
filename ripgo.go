@@ -433,6 +433,11 @@ func WithIgnoreCase(v bool) Option {
 	return func(c *Config) { c.Pattern.IgnoreCase = v }
 }
 
+// WithSmartCase enables case-insensitive matching unless uppercase characters are present.
+func WithSmartCase(v bool) Option {
+	return func(c *Config) { c.Pattern.SmartCase = v }
+}
+
 func WithFixedStrings(v bool) Option {
 	return func(c *Config) { c.Pattern.FixedStrings = v }
 }
