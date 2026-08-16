@@ -224,6 +224,35 @@ func TestFindDirectoriesAndExplicitFile(t *testing.T) {
 	}
 }
 
+func TestFindReportsPermissionErrors(t *testing.T) {
+	root := t.TempDir()
+	blocked := filepath.Join(root, "blocked")
+	if err := os.Mkdir(blocked, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(blocked, "file.txt"), []byte("content"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(blocked, 0); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(blocked, 0o700) })
+
+	hadError := false
+	for result, err := range Find(t.Context(), "", []string{root}, WithFindNoIgnore(true), WithFindHidden(true)) {
+		if err != nil {
+			hadError = true
+			continue
+		}
+		if result.Path == filepath.Join(blocked, "file.txt") {
+			t.Fatal("finder emitted a file from an unreadable directory")
+		}
+	}
+	if !hadError {
+		t.Skip("filesystem permissions are not enforced for this test process")
+	}
+}
+
 func TestFindReportsErrorsAndSupportsCancellation(t *testing.T) {
 	missing := filepath.Join(t.TempDir(), "missing")
 	var foundError bool

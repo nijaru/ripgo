@@ -1,11 +1,9 @@
 package fsref
 
 import (
-	"fmt"
 	"io/fs"
 	"os"
 	"runtime"
-	"syscall"
 )
 
 // Ref represents a capability-based file reference.
@@ -20,34 +18,6 @@ type Ref interface {
 	ReadFile() ([]byte, error)
 	// Mmap returns a memory-mapped view of the file.
 	Mmap() ([]byte, func() error, error)
-}
-
-// mmapHelper is a shared implementation of Mmap for Ref types.
-func mmapHelper(r Ref) ([]byte, func() error, error) {
-	info := r.Info()
-	if info == nil {
-		return nil, nil, fmt.Errorf("cannot mmap: file info not available")
-	}
-	if info.Size() == 0 {
-		return nil, nil, fmt.Errorf("cannot mmap empty file")
-	}
-
-	file, err := r.Open()
-	if err != nil {
-		return nil, nil, err
-	}
-	defer file.Close()
-
-	data, err := syscall.Mmap(int(file.Fd()), 0, int(info.Size()), syscall.PROT_READ, syscall.MAP_SHARED)
-	if err != nil {
-		return nil, nil, err
-	}
-
-	unmap := func() error {
-		return syscall.Munmap(data)
-	}
-
-	return data, unmap, nil
 }
 
 // pathRef is a compatibility backend that stores a path and uses standard os/fs calls.
