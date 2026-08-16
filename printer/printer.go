@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strconv"
 	"strings"
 
 	"github.com/nijaru/ripgo/search"
@@ -184,30 +185,30 @@ func (p *TextPrinter) formatMatch(match search.Match, line []byte, submatches []
 func (p *TextPrinter) printMatchLine(path string, match search.Match, content []byte) {
 	sep := colorize(":", colorSep, p.color)
 	pathStr := colorize(path, colorPath, p.color)
-	lineStr := colorize(fmt.Sprint(match.Line), colorLine, p.color)
-	colStr := colorize(fmt.Sprint(match.Column), colorLine, p.color)
+	lineStr := colorize(strconv.Itoa(match.Line), colorLine, p.color)
+	colStr := colorize(strconv.Itoa(match.Column), colorLine, p.color)
 	truncated := p.truncate(content)
 	formatted := p.formatMatch(match, truncated, match.Submatches)
 
 	if p.heading {
 		switch {
 		case p.lineNumber && p.column:
-			fmt.Fprintf(p.w, "%s%s%s%s%s\n", lineStr, sep, colStr, sep, formatted)
+			writeStrings(p.w, lineStr, sep, colStr, sep, formatted, "\n")
 		case p.lineNumber:
-			fmt.Fprintf(p.w, "%s%s%s\n", lineStr, sep, formatted)
+			writeStrings(p.w, lineStr, sep, formatted, "\n")
 		default:
-			fmt.Fprintf(p.w, "%s\n", formatted)
+			writeStrings(p.w, formatted, "\n")
 		}
 		return
 	}
 
 	switch {
 	case p.lineNumber && p.column:
-		fmt.Fprintf(p.w, "%s%s%s%s%s%s%s\n", pathStr, sep, lineStr, sep, colStr, sep, formatted)
+		writeStrings(p.w, pathStr, sep, lineStr, sep, colStr, sep, formatted, "\n")
 	case p.lineNumber:
-		fmt.Fprintf(p.w, "%s%s%s%s%s\n", pathStr, sep, lineStr, sep, formatted)
+		writeStrings(p.w, pathStr, sep, lineStr, sep, formatted, "\n")
 	default:
-		fmt.Fprintf(p.w, "%s%s%s\n", pathStr, sep, formatted)
+		writeStrings(p.w, pathStr, sep, formatted, "\n")
 	}
 }
 
@@ -215,28 +216,38 @@ func (p *TextPrinter) printMatchLine(path string, match search.Match, content []
 func (p *TextPrinter) printContextLine(path string, line int, content string) {
 	sep := colorize("-", colorSep, p.color)
 	pathStr := colorize(path, colorPath, p.color)
-	lineStr := colorize(fmt.Sprint(line), colorLine, p.color)
+	lineStr := colorize(strconv.Itoa(line), colorLine, p.color)
 	truncated := p.truncate([]byte(content))
 
 	if p.heading {
 		if p.lineNumber {
-			fmt.Fprintf(p.w, "%s%s%s\n", lineStr, sep, string(truncated))
+			writeStrings(p.w, lineStr, sep, string(truncated), "\n")
 		} else {
-			fmt.Fprintf(p.w, "%s\n", string(truncated))
+			writeStrings(p.w, string(truncated), "\n")
 		}
 		return
 	}
 
 	if p.lineNumber {
-		fmt.Fprintf(p.w, "%s%s%s%s%s\n", pathStr, sep, lineStr, sep, string(truncated))
+		writeStrings(p.w, pathStr, sep, lineStr, sep, string(truncated), "\n")
 	} else {
-		fmt.Fprintf(p.w, "%s%s%s\n", pathStr, sep, string(truncated))
+		writeStrings(p.w, pathStr, sep, string(truncated), "\n")
 	}
 }
 
 // Finish flushes any buffered output.
 func (p *TextPrinter) Finish(_ *stats.Stats) error {
 	return flushWriter(p.w)
+}
+
+func writeStrings(w io.Writer, strs ...string) {
+	for _, s := range strs {
+		if sw, ok := w.(io.StringWriter); ok {
+			sw.WriteString(s)
+		} else {
+			io.WriteString(w, s)
+		}
+	}
 }
 
 // CountPrinter outputs match counts per file.
@@ -254,7 +265,7 @@ func NewCountPrinter(w io.Writer) *CountPrinter {
 
 // PrintResult outputs the match count for a single file.
 func (p *CountPrinter) PrintResult(r search.Result) error {
-	fmt.Fprintf(p.w, "%s:%d\n", r.Path, len(r.Matches))
+	writeStrings(p.w, r.Path, ":", strconv.Itoa(len(r.Matches)), "\n")
 	return nil
 }
 
@@ -284,7 +295,7 @@ func NewFilesPrinter(w io.Writer) *FilesPrinter {
 func (p *FilesPrinter) PrintResult(r search.Result) error {
 	if len(r.Matches) > 0 && !p.seen[r.Path] {
 		p.seen[r.Path] = true
-		fmt.Fprintln(p.w, r.Path)
+		writeStrings(p.w, r.Path, "\n")
 	}
 	return nil
 }

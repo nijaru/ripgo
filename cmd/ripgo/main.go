@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -439,18 +440,23 @@ func sortResults(results []search.Result, mode string) {
 }
 
 func newPrinter(cfg *config.Config) printer.Printer {
+	var stdoutWriter io.Writer = os.Stdout
+	if bw := bufio.NewWriterSize(os.Stdout, 64*1024); bw != nil {
+		stdoutWriter = bw
+	}
+
 	switch cfg.OutputMode() {
 	case config.OutputJSON:
-		return printer.NewJSONPrinter(os.Stdout)
+		return printer.NewJSONPrinter(stdoutWriter)
 	case config.OutputCount:
-		return printer.NewCountPrinter(os.Stdout)
+		return printer.NewCountPrinter(stdoutWriter)
 	case config.OutputFiles:
-		return printer.NewFilesPrinter(os.Stdout)
+		return printer.NewFilesPrinter(stdoutWriter)
 	case config.OutputQuiet:
 		return discardPrinter{}
 	default:
 		return printer.NewTextPrinter(printer.TextConfig{
-			Writer:     os.Stdout,
+			Writer:     stdoutWriter,
 			LineNumber: cfg.LineNumber,
 			Column:     cfg.Column,
 			Heading:    cfg.Heading,
