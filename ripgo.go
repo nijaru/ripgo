@@ -168,6 +168,7 @@ func Find(ctx context.Context, pattern string, paths []string, opts ...FindOptio
 		if len(roots) == 0 {
 			roots = []string{"."}
 		}
+		preparedRoots := prepareRoots(roots)
 
 		walker := walk.NewWalker(fsys, cfg.WalkerConfig(), engine)
 		fileCh := make(chan walk.Entry, 1024)
@@ -200,7 +201,7 @@ func Find(ctx context.Context, pattern string, paths []string, opts ...FindOptio
 					fileCh = nil
 					continue
 				}
-				matchPath := findMatchPath(entry.DisplayPath(), roots)
+				matchPath := resolveMatchPath(entry.DisplayPath(), preparedRoots)
 				if !filter.MatchPath(entry, matchPath) {
 					continue
 				}
@@ -341,35 +342,58 @@ func WithFindNoIgnore(v bool) FindOption {
 	return func(c *findpkg.Config) { c.Ignore.NoIgnore = v }
 }
 
-func findMatchPath(entryPath string, roots []string) string {
-	entryPath = findpkg.NormalizePath(entryPath)
-	for _, root := range roots {
-		root = findpkg.NormalizePath(root)
-		if root == "" {
-			root = "."
+type preparedRoot struct {
+	norm   string
+	prefix string
+	base   string
+	isDot  bool
+}
+
+func prepareRoots(roots []string) []preparedRoot {
+	res := make([]preparedRoot, len(roots))
+	for i, root := range roots {
+		norm := findpkg.NormalizePath(root)
+		if norm == "" {
+			norm = "."
 		}
-		if root == "." {
+		res[i] = preparedRoot{
+			norm:   norm,
+			prefix: strings.TrimSuffix(norm, "/") + "/",
+			base:   path.Base(norm),
+			isDot:  norm == ".",
+		}
+	}
+	return res
+}
+
+func resolveMatchPath(entryPath string, roots []preparedRoot) string {
+	entryPath = findpkg.NormalizePath(entryPath)
+	for _, r := range roots {
+		if r.isDot {
 			return entryPath
 		}
-		if entryPath == root {
-			return path.Base(root)
+		if entryPath == r.norm {
+			return r.base
 		}
-		prefix := strings.TrimSuffix(root, "/") + "/"
-		if strings.HasPrefix(entryPath, prefix) {
-			return strings.TrimPrefix(entryPath, prefix)
+		if strings.HasPrefix(entryPath, r.prefix) {
+			return strings.TrimPrefix(entryPath, r.prefix)
 		}
 
-		rel, err := filepath.Rel(filepath.FromSlash(root), filepath.FromSlash(entryPath))
+		rel, err := filepath.Rel(filepath.FromSlash(r.norm), filepath.FromSlash(entryPath))
 		rel = filepath.ToSlash(rel)
 		if err != nil || rel == ".." || len(rel) > 3 && rel[:3] == "../" {
 			continue
 		}
 		if rel == "." {
-			return path.Base(root)
+			return r.base
 		}
 		return rel
 	}
 	return entryPath
+}
+
+func findMatchPath(entryPath string, roots []string) string {
+	return resolveMatchPath(entryPath, prepareRoots(roots))
 }
 
 // Config represents the complete search configuration.

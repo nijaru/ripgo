@@ -56,19 +56,24 @@ func (p *PathPrinter) PrintResult(result find.Result) error {
 		path = colorize(path, colorPath, true)
 	}
 
-	terminator := byte('\n')
+	terminator := "\n"
 	if p.null {
-		terminator = 0
+		terminator = "\x00"
 	}
-	if err := writeAll(p.w, []byte(path)); err != nil {
-		return err
-	}
-	return writeAll(p.w, []byte{terminator})
+	return writeString(p.w, path+terminator)
 }
 
 // Finish flushes any buffered output.
 func (p *PathPrinter) Finish() error {
 	return flushWriter(p.w)
+}
+
+func writeString(w io.Writer, s string) error {
+	if sw, ok := w.(io.StringWriter); ok {
+		_, err := sw.WriteString(s)
+		return err
+	}
+	return writeAll(w, []byte(s))
 }
 
 func writeAll(w io.Writer, data []byte) error {

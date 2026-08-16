@@ -542,52 +542,35 @@ func (e *Engine) lookup(path string) *IgnoreSet {
 // path MUST be cleaned and use forward slashes (normalized by Walker).
 // If ctx is provided, it avoids redundant trie traversals.
 func (e *Engine) ShouldIgnore(path string, isDir bool, ctx ...IgnoreContext) bool {
-	// 1. Calculate path relative to cwd for glob matching
-	relSlash := path
-	if e.baseRelSlash != "" && strings.HasPrefix(path, e.baseRelSlash) {
-		if len(path) > len(e.baseRelSlash) {
-			relSlash = path[len(e.baseRelSlash)+1:]
-		} else {
-			relSlash = ""
-		}
-	}
+	hasGlobs := len(e.excludes) > 0 || (!isDir && len(e.includes) > 0) || (!isDir && (len(e.typeExcludes) > 0 || len(e.typeIncludes) > 0))
 
-	// 2. CLI globs always take precedence
-	base := relSlash
-	if idx := strings.LastIndexByte(relSlash, '/'); idx >= 0 {
-		base = relSlash[idx+1:]
-	}
-
-	for i := range e.excludes {
-		if e.excludes[i].Match(relSlash) || e.excludes[i].Match(base) {
-			return true
-		}
-	}
-
-	if !isDir && len(e.includes) > 0 {
-		matched := false
-		for i := range e.includes {
-			if e.includes[i].Match(relSlash) || e.includes[i].Match(base) {
-				matched = true
-				break
+	if hasGlobs {
+		// 1. Calculate path relative to cwd for glob matching
+		relSlash := path
+		if e.baseRelSlash != "" && strings.HasPrefix(path, e.baseRelSlash) {
+			if len(path) > len(e.baseRelSlash) {
+				relSlash = path[len(e.baseRelSlash)+1:]
+			} else {
+				relSlash = ""
 			}
 		}
-		if !matched {
-			return true
-		}
-	}
 
-	// 3. Type filters (files only)
-	if !isDir {
-		for i := range e.typeExcludes {
-			if e.typeExcludes[i].Match(relSlash) || e.typeExcludes[i].Match(base) {
+		// 2. CLI globs always take precedence
+		base := relSlash
+		if idx := strings.LastIndexByte(relSlash, '/'); idx >= 0 {
+			base = relSlash[idx+1:]
+		}
+
+		for i := range e.excludes {
+			if e.excludes[i].Match(relSlash) || e.excludes[i].Match(base) {
 				return true
 			}
 		}
-		if len(e.typeIncludes) > 0 {
+
+		if !isDir && len(e.includes) > 0 {
 			matched := false
-			for i := range e.typeIncludes {
-				if e.typeIncludes[i].Match(relSlash) || e.typeIncludes[i].Match(base) {
+			for i := range e.includes {
+				if e.includes[i].Match(relSlash) || e.includes[i].Match(base) {
 					matched = true
 					break
 				}
@@ -596,15 +579,59 @@ func (e *Engine) ShouldIgnore(path string, isDir bool, ctx ...IgnoreContext) boo
 				return true
 			}
 		}
+
+		// 3. Type filters (files only)
+		if !isDir {
+			for i := range e.typeExcludes {
+				if e.typeExcludes[i].Match(relSlash) || e.typeExcludes[i].Match(base) {
+					return true
+				}
+			}
+			if len(e.typeIncludes) > 0 {
+				matched := false
+				for i := range e.typeIncludes {
+					if e.typeIncludes[i].Match(relSlash) || e.typeIncludes[i].Match(base) {
+						matched = true
+						break
+					}
+				}
+				if !matched {
+					return true
+				}
+			}
+		}
 	}
 
 	// 4. Hidden file check
 	if !e.cfg.Hidden {
-		for i := 0; i < len(relSlash); i++ {
-			if relSlash[i] == '.' && (i == 0 || relSlash[i-1] == '/') {
+		fromWalkCtx := len(ctx) > 0
+		if fromWalkCtx {
+			if idx := strings.LastIndexByte(path, '/'); idx >= 0 {
+				if len(path) > idx+1 && path[idx+1] == '.' {
+					return true
+				}
+			} else if len(path) > 0 && path[0] == '.' {
 				return true
 			}
+		} else {
+			relSlash := path
+			if e.baseRelSlash != "" && strings.HasPrefix(path, e.baseRelSlash) {
+				if len(path) > len(e.baseRelSlash) {
+					relSlash = path[len(e.baseRelSlash)+1:]
+				} else {
+					relSlash = ""
+				}
+			}
+			for i := 0; i < len(relSlash); i++ {
+				if relSlash[i] == '.' && (i == 0 || relSlash[i-1] == '/') {
+					return true
+				}
+			}
 		}
+	}
+
+	if e.cfg.NoIgnore {
+		return false
 	}
 
 	// 5. Check ignore file rules via chain.
@@ -634,7 +661,7 @@ func (e *Engine) ShouldIgnore(path string, isDir bool, ctx ...IgnoreContext) boo
 	}
 
 	// 7. Check rules for the file itself.
-	relToSet := relSlash
+	relToSet := path
 	if bestSet.Dir != "." && strings.HasPrefix(path, bestSet.Dir) {
 		if len(path) > len(bestSet.Dir) {
 			relToSet = path[len(bestSet.Dir)+1:]

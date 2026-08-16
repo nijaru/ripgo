@@ -53,6 +53,9 @@ type Config struct {
 	MaxDepth int
 	// MaxDepthSet enables MaxDepth when it is zero.
 	MaxDepthSet bool
+	// SkipFileRef omits constructing capability-backed fsref.Ref file references.
+	// Used when file content is not read.
+	SkipFileRef bool
 }
 
 // EntryKind identifies the kind of filesystem entry.
@@ -156,7 +159,11 @@ func (q *dirQueue) Push(dirs ...dirWork) {
 		return
 	}
 	q.dirs = append(q.dirs, dirs...)
-	q.cond.Broadcast()
+	if len(dirs) == 1 {
+		q.cond.Signal()
+	} else {
+		q.cond.Broadcast()
+	}
 }
 
 func (q *dirQueue) Pop(ctx context.Context) (dirWork, bool) {
@@ -490,8 +497,10 @@ func (w *Walker) walkWorker(ctx context.Context, queue *dirQueue, fileCh chan<- 
 		}
 
 		var root *fsref.Root
-		if rp, ok := w.fsys.(rootProvider); ok {
-			root, _ = rp.OpenRoot(dir)
+		if !w.cfg.SkipFileRef {
+			if rp, ok := w.fsys.(rootProvider); ok {
+				root, _ = rp.OpenRoot(dir)
+			}
 		}
 
 		ictx, _ := w.ignoreEngine.LoadIgnoreFile(dir)
@@ -585,10 +594,12 @@ func (w *Walker) walkWorker(ctx context.Context, queue *dirQueue, fileCh chan<- 
 			}
 
 			var ref fsref.Ref
-			if root != nil {
-				ref = fsref.NewRootedRef(root, name, path, info)
-			} else {
-				ref = fsref.NewPathRef(path, info, w.fsys)
+			if !w.cfg.SkipFileRef {
+				if root != nil {
+					ref = fsref.NewRootedRef(root, name, path, info)
+				} else {
+					ref = fsref.NewPathRef(path, info, w.fsys)
+				}
 			}
 
 			select {

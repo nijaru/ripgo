@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"fmt"
 	"os"
@@ -193,7 +194,7 @@ func runFind(ctx context.Context, opts cli.FindOptions) int {
 	}
 
 	pathPrinter := printer.NewPathPrinter(printer.PathConfig{
-		Writer:   os.Stdout,
+		Writer:   bufio.NewWriterSize(os.Stdout, 64*1024),
 		Absolute: cfg.Absolute,
 		Null:     cfg.Print0,
 		Color:    cfg.Color,

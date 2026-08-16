@@ -80,6 +80,7 @@ func (c Config) WalkerConfig() walk.Config {
 	cfg.EmitSymlinks = c.emitsType(TypeSymlink)
 	cfg.LazyFileInfo = c.OmitInfo || c.lazyFileInfo()
 	cfg.IgnoreDanglingSymlinks = true
+	cfg.SkipFileRef = true
 	return cfg
 }
 
