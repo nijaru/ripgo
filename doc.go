@@ -1,8 +1,8 @@
-// Package ripgo provides high-level APIs for searching file contents and
+// Package ripgo provides streaming APIs for searching file contents and
 // finding filesystem paths.
 //
-// It orchestrates traversal (walk), filtering (ignore), and matching (pattern
-// and find) into simple streaming interfaces for library consumers.
+// It integrates traversal, ignore-rule filtering, and pattern matching into
+// range-over-func iterators over any io/fs.FS filesystem.
 //
 // # Basic Usage
 //

@@ -1,12 +1,12 @@
 # ripgo
 
-Ripgrep-compatible content search and fd-like path finding, designed library-first in idiomatic Go. Each package is independently importable with zero CLI dependencies.
+Ripgrep-compatible content search and fd-like path finding in Go. Designed as importable packages with zero CLI dependencies, backed by a single static binary.
 
 ## Quick Start
 
 ### Content Search (`ripgo.Search`)
 
-Stream matches over `iter.Seq2` with automatic BOM sniffing, regex/literal search, and file-type filters:
+Stream matches using standard `range` iterators:
 
 ```go
 package main
@@ -39,7 +39,7 @@ func main() {
 
 ### Path Finding (`ripgo.Find`)
 
-Find paths by name, glob, type, size, depth, or extension without reading file contents:
+Match paths and filter by metadata without reading file content:
 
 ```go
 package main
